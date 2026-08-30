@@ -1,0 +1,39 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://skyhub:${POSTGRES_PASSWORD:-skyhub}@postgres:5432/skyhub
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+      - ./config/config.yaml:/app/config/config.yaml
+      - ./data:/app/data  # загруженные треки радио (plugins/radio) переживают пересборку образа
+    stdin_open: true
+    tty: true
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: skyhub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-skyhub}
+      POSTGRES_DB: skyhub
+    volumes:
+      - skyhub_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skyhub"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Redis намеренно НЕ включён -- архитектура оставляет для него место
+  # (см. раздел README "Что можно добавить дальше"), но в этом коде он
+  # пока никому не нужен, а добавление инфраструктуры без реальной
+  # необходимости -- именно то, против чего выступают принципы проекта (ТЗ §38).
+
+volumes:
+  skyhub_postgres_data:

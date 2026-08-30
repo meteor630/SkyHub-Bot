@@ -1,0 +1,85 @@
+# Конфигурация бота SkyHub Aviation (не содержит секретов).
+#
+# Всё, что здесь есть, можно также редактировать прямо из Discord через
+# /setup для конкретного сервера -- значения ниже используются только
+# по умолчанию, пока администратор не выполнит /setup, и как запасной
+# вариант, если в базе данных ещё ничего нет (ТЗ §24, §27).
+
+bot:
+  name: "SkyHub Bot"
+  version: "1.0.0"
+  locale: "ru"
+
+discord:
+  # Основной сервер. Необязательно -- бот работает на нескольких
+  # серверах одновременно, но этот ID используется как запасная цель
+  # для сообщений о запуске/статусе.
+  home_guild_id: null
+
+# ID каналов по умолчанию, используются только пока у сервера нет
+# записи в guild_settings (задаётся через /setup). Оставьте null,
+# чтобы отключить функцию до настройки.
+channels:
+  welcome: null
+  moderation_logs: null
+  deleted_messages: null
+  edited_messages: null
+  member_logs: null
+  error_logs: null
+  audit_logs: null
+  temporary_voice_creator: null
+  status: null
+  radio_voice: null
+  radio_text: null
+  flight_log: null
+
+categories:
+  temporary_voice: null
+  tickets: null
+
+# ID ролей по умолчанию для core/permissions.py::Role. В реальной
+# эксплуатации их нужно задавать через /setup, когда роли уже созданы
+# на сервере.
+roles:
+  owner: null
+  admin: null
+  moderator: null
+  support: null
+
+plugins:
+  message_builder:
+    enabled: true
+  moderation:
+    enabled: true
+  deleted_messages:
+    enabled: true
+  edited_messages:
+    enabled: true
+  member_logs:
+    enabled: true
+  voice_channels:
+    enabled: true
+  welcome:
+    enabled: true
+  audit:
+    enabled: true
+  server_setup:
+    enabled: true
+  status_dashboard:
+    enabled: true
+  radio:
+    enabled: true
+  aviation_profile:
+    enabled: true
+  flight_log:
+    enabled: true
+  weather:
+    enabled: true
+  tickets:
+    enabled: true
+  leveling:
+    enabled: true
+  flight_events:
+    enabled: true
+  server_stats:
+    enabled: true

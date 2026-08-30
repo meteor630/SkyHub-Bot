@@ -1,0 +1,3 @@
+enabled: true
+empty_channel_delete_delay_seconds: 10
+name_template: "✈️ Комната {name}"
