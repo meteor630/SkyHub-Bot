@@ -1,47 +1,52 @@
 """``/setup`` -- настройка бота полностью из Discord (идея клиента №1).
 
-Роли по-прежнему выбираются через нативный ``discord.ui.RoleSelect``
-(Discord сам рисует список ролей сервера). Каналы -- **не** через
-``discord.ui.ChannelSelect``: этот компонент оказался ненадёжным именно
-для свежесозданных каналов.
+Ни каналы, ни роли здесь **не** выбираются через нативные
+``discord.ui.ChannelSelect``/``discord.ui.RoleSelect`` -- у обоих
+компонентов на практике обнаружилась одна и та же проблема: список
+вариантов иногда показывает не всё, что реально есть на сервере.
 
-Расследование (по жалобе: новый канал `#ккк` виден боту через API,
-права в порядке, `#`-упоминание в чате находит его мгновенно -- но
+Расследование (по жалобе на каналы: новый канал `#ккк` виден боту через
+API, права в порядке, `#`-упоминание в чате находит его мгновенно -- но
 `discord.ui.ChannelSelect` в `/setup` его не показывает даже при новом
-вызове команды):
+вызове команды; позже та же картина повторилась с ролями в
+`discord.ui.RoleSelect` -- показывались не все существующие роли):
 
 * discord.py (2.7.1, см. ``discord/ui/select.py::BaseSelect``) для
-  ``ChannelSelect`` отправляет Discord только ``channel_types`` --
-  никакого списка каналов бот не передаёт и никак не кэширует, т.е.
-  версия/код библиотеки тут ни при чём -- баг не в discord.py.
-* Список вариантов для этого типа компонента (``channel_select``,
-  тип 8) целиком строит и отдаёт сервер Discord в момент открытия
+  ``ChannelSelect``/``RoleSelect`` отправляет Discord только
+  ``channel_types``/тип компонента -- никакого списка каналов или
+  ролей бот не передаёт и никак не кэширует, т.е. версия/код библиотеки
+  тут ни при чём -- баг не в discord.py.
+* Список вариантов для этих типов компонентов (auto-populated select,
+  типы 6/8) целиком строит и отдаёт сервер Discord в момент открытия
   выпадающего списка -- через свой отдельный внутренний механизм,
   который не совпадает с тем, что используется для обычного
-  `#`-упоминания в поле ввода сообщения. У этого механизма
-  подтверждённая на практике задержка индексации свежесозданных
-  каналов -- независимо от прав доступа и кэша бота.
+  `#`/`@`-упоминания в поле ввода сообщения. У этого механизма
+  подтверждённая на практике задержка/неполнота индексации -- как для
+  свежесозданных каналов, так и (как выяснилось позже) для части ролей
+  сервера -- независимо от прав доступа и кэша бота.
 * Единственный код, которым мы управляем, -- это ЧТО отправляется в
   Discord при создании компонента; самим списком вариантов внутри
   выпадающего меню мы не управляем вообще. Поэтому чинить нужно не
   фильтр/права/custom_id (они были в порядке), а сам способ выбора.
 
-Решение: канал теперь выбирается через собственный ``discord.ui.Select``
-(``ManualChannelSelect`` ниже), варианты которого строятся вручную из
-``guild.channels`` -- то есть из **собственного** кэша бота, который
-discord.py обновляет мгновенно по гейтвей-событию ``CHANNEL_CREATE``,
-без какой-либо зависимости от отдельного индекса Discord для
-auto-populated компонентов. Внешний вид и порядок команд `/setup`
-не изменились; сохранение выбора в ``guild_settings`` и инвалидация
-кэша (TTL-кэш конфигурации сервера, карта ролей для прав доступа) --
-как и раньше.
+Решение: и канал, и роль теперь выбираются через собственные
+``discord.ui.Select`` (``ManualChannelSelect``/``ManualRoleSelect``
+ниже), варианты которых строятся вручную из ``guild.channels``/
+``guild.roles`` -- то есть из **собственного** кэша бота, который
+discord.py обновляет мгновенно по гейтвей-событиям
+``CHANNEL_CREATE``/``GUILD_ROLE_CREATE`` и т.п., без какой-либо
+зависимости от отдельного индекса Discord для auto-populated
+компонентов. Внешний вид и порядок команд `/setup` не изменились;
+сохранение выбора в ``guild_settings`` и инвалидация кэша (TTL-кэш
+конфигурации сервера, карта ролей для прав доступа) -- как и раньше.
 
 У обычного `discord.ui.Select` жёсткий лимит в 25 опций -- если
-подходящих каналов на сервере больше, показываются первые 24 (по
-позиции в списке каналов) плюс последний пункт-подсказка со ссылкой на
-``/setup channel`` (принимает канал как обычный параметр команды --
-тот же способ резолвинга, что и `#`-упоминание, поэтому не ограничен
-25 пунктами и не подвержен задержке индексации).
+подходящих каналов/ролей на сервере больше, показываются первые 24 (по
+позиции) плюс последний пункт-подсказка со ссылкой на запасные команды
+``/setup channel`` и ``/setup role``/``/setup ignore-role`` (принимают
+канал/роль как обычный параметр команды -- тот же способ резолвинга,
+что и `#`/`@`-упоминание, поэтому не ограничены 25 пунктами и не
+подвержены задержке/неполноте индексации).
 """
 from __future__ import annotations
 
@@ -67,6 +72,13 @@ CHANNEL_SETTINGS: dict[str, tuple[str, type[discord.abc.GuildChannel], str]] = {
     "temp-voice-creator": ("temporary_voice_creator_channel_id", discord.VoiceChannel, "Создание временного voice"),
     "temp-voice-category": ("temporary_voice_category_id", discord.CategoryChannel, "Категория временных voice"),
     "tickets-category": ("tickets_category_id", discord.CategoryChannel, "Категория тикетов"),
+}
+
+# key -> (атрибут GuildSettings, подпись для сообщений) -- роли модерации.
+ROLE_SETTINGS: dict[str, tuple[str, str]] = {
+    "admin": ("admin_role_id", "Администратор"),
+    "moderator": ("moderator_role_id", "Модератор"),
+    "support": ("support_role_id", "Поддержка"),
 }
 
 _CHANNEL_TYPE_EMOJI = {
@@ -130,6 +142,79 @@ async def _resolve_selected_channel(interaction: discord.Interaction, select: di
         )
         return None
     return channel
+
+
+class ManualRoleSelect(discord.ui.Select):
+    """Замена ``discord.ui.RoleSelect`` -- варианты строятся вручную из
+    ``guild.roles`` по тем же причинам, что и у :class:`ManualChannelSelect`
+    (см. docstring модуля): нативный ``RoleSelect`` на практике показывал
+    не все существующие на сервере роли."""
+
+    def __init__(
+        self, *, guild: discord.Guild, placeholder: str,
+        min_values: int = 1, max_values: int = 1, default_role_ids: tuple[int, ...] = (),
+    ) -> None:
+        roles = sorted(
+            (r for r in guild.roles if not r.is_default()),
+            key=lambda r: r.position, reverse=True,  # как в настройках сервера Discord -- сверху самая старшая
+        )
+        truncated = len(roles) > _MAX_OPTIONS
+        default_ids = set(default_role_ids)
+
+        options: list[discord.SelectOption] = []
+        for role in roles[: _MAX_OPTIONS - 1 if truncated else _MAX_OPTIONS]:
+            options.append(discord.SelectOption(
+                label=role.name[:100], value=str(role.id), description=f"ID: {role.id}",
+                default=role.id in default_ids,
+            ))
+
+        if truncated:
+            options.append(discord.SelectOption(
+                label=f"…ещё {len(roles) - (_MAX_OPTIONS - 1)} -- используйте /setup role",
+                value=_OVERFLOW_VALUE, description="Слишком много ролей для одного списка", emoji="⚠️",
+            ))
+        elif not options:
+            options.append(discord.SelectOption(label="Ролей не найдено", value=_OVERFLOW_VALUE))
+
+        super().__init__(
+            placeholder=placeholder, min_values=min_values, max_values=min(max_values, len(options)),
+            options=options, disabled=not roles,
+        )
+
+
+async def _resolve_selected_role(interaction: discord.Interaction, select: discord.ui.Select) -> discord.Role | None:
+    """Аналог :func:`_resolve_selected_channel` для одиночного выбора роли."""
+    value = select.values[0]
+    if value == _OVERFLOW_VALUE:
+        await interaction.response.send_message(
+            "⚠️ В списке слишком много ролей, чтобы показать все -- укажите нужную напрямую: `/setup role`.",
+            ephemeral=True,
+        )
+        return None
+
+    role = interaction.guild.get_role(int(value)) if interaction.guild else None
+    if role is None:
+        await interaction.response.send_message(
+            "⚠️ Роль не найдена (возможно, была удалена) -- откройте команду заново.", ephemeral=True,
+        )
+        return None
+    return role
+
+
+async def _resolve_selected_roles(interaction: discord.Interaction, select: discord.ui.Select) -> list[discord.Role]:
+    """Аналог :func:`_resolve_selected_channel` для мультивыбора ролей
+    (:class:`IgnoredRolesSetupView`). Пункт-переполнение просто
+    отфильтровывается -- остальной выбор всё равно сохраняется, а не
+    отбрасывается целиком."""
+    guild = interaction.guild
+    roles: list[discord.Role] = []
+    for value in select.values:
+        if value == _OVERFLOW_VALUE:
+            continue
+        role = guild.get_role(int(value)) if guild else None
+        if role is not None:
+            roles.append(role)
+    return roles
 
 
 class ChannelsSetupView(discord.ui.View):
@@ -306,21 +391,19 @@ class IgnoredRolesSetupView(discord.ui.View):
     модерации -- удобно для самовыдаваемых ролей (авиасимулятор, регион
     и т.п.), которых у активного сервера могут быть сотни в день."""
 
-    def __init__(self, ctx, current_role_ids: list[int]) -> None:
+    def __init__(self, ctx, guild: discord.Guild, current_role_ids: list[int]) -> None:
         super().__init__(timeout=180)
         self.ctx = ctx
-        select = discord.ui.RoleSelect(
-            placeholder="Роли, которые НЕ логировать (можно несколько, можно пусто)",
-            min_values=0, max_values=25,
+        select = ManualRoleSelect(
+            guild=guild, placeholder="Роли, которые НЕ логировать (можно несколько, можно пусто)",
+            min_values=0, max_values=25, default_role_ids=tuple(current_role_ids),
         )
-        # Discord позволяет заранее выделить текущий выбор через default_values.
-        select.default_values = [discord.Object(id=role_id) for role_id in current_role_ids[:25]]
         select.callback = self._callback(select)
         self.add_item(select)
 
-    def _callback(self, select: discord.ui.RoleSelect):
+    def _callback(self, select: discord.ui.Select):
         async def callback(interaction: discord.Interaction) -> None:
-            role_ids = [role.id for role in select.values]
+            role_ids = [role.id for role in await _resolve_selected_roles(interaction, select)]
             async with self.ctx.db.session() as session:
                 repo = GuildRepository(session)
                 await repo.get_or_create(interaction.guild_id, interaction.guild.name)
@@ -343,17 +426,19 @@ class RolesSetupView(discord.ui.View):
         ("support_role_id", "Поддержка"),
     ]
 
-    def __init__(self, ctx) -> None:
+    def __init__(self, ctx, guild: discord.Guild) -> None:
         super().__init__(timeout=180)
         self.ctx = ctx
         for attr, label in self.FIELDS:
-            select = discord.ui.RoleSelect(placeholder=f"Роль: {label}", min_values=1, max_values=1)
+            select = ManualRoleSelect(guild=guild, placeholder=f"Роль: {label}")
             select.callback = self._make_callback(select, attr, label)
             self.add_item(select)
 
-    def _make_callback(self, select: discord.ui.RoleSelect, attr: str, label: str):
+    def _make_callback(self, select: discord.ui.Select, attr: str, label: str):
         async def callback(interaction: discord.Interaction) -> None:
-            role = select.values[0]
+            role = await _resolve_selected_role(interaction, select)
+            if role is None:
+                return
             async with self.ctx.db.session() as session:
                 repo = GuildRepository(session)
                 await repo.get_or_create(interaction.guild_id, interaction.guild.name)
@@ -393,7 +478,9 @@ class ServerSetupCog(commands.Cog):
     @setup_group.command(name="roles", description="Настроить роли модерации")
     @require(Role.ADMIN)
     async def roles(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message("Выберите роли:", view=RolesSetupView(self.ctx), ephemeral=True)
+        await interaction.response.send_message(
+            "Выберите роли:", view=RolesSetupView(self.ctx, interaction.guild), ephemeral=True
+        )
 
     @setup_group.command(name="status", description="Настроить канал живого статуса бота")
     @require(Role.ADMIN)
@@ -471,8 +558,50 @@ class ServerSetupCog(commands.Cog):
         await interaction.response.send_message(
             "Выберите роли, изменения которых у участников не нужно писать в лог модерации "
             "(например, самовыдаваемые роли симулятора/региона):",
-            view=IgnoredRolesSetupView(self.ctx, current), ephemeral=True,
+            view=IgnoredRolesSetupView(self.ctx, interaction.guild, current), ephemeral=True,
         )
+
+    @setup_group.command(name="role", description="Указать роль модерации напрямую по упоминанию (для больших списков)")
+    @app_commands.describe(key="Что настраивается", role="Роль (можно вставить @упоминание)")
+    @app_commands.choices(key=[
+        app_commands.Choice(name=label, value=k) for k, (_, label) in ROLE_SETTINGS.items()
+    ])
+    @require(Role.ADMIN)
+    async def role_by_mention(self, interaction: discord.Interaction, key: app_commands.Choice[str], role: discord.Role) -> None:
+        attr, label = ROLE_SETTINGS[key.value]
+        await interaction.response.defer(ephemeral=True)
+        async with self.ctx.db.session() as session:
+            repo = GuildRepository(session)
+            await repo.get_or_create(interaction.guild_id, interaction.guild.name)
+            await repo.update_settings(interaction.guild_id, **{attr: role.id})
+        self.ctx.guild_config().invalidate(interaction.guild_id)
+        role_map = await self.ctx.guild_config().role_map_for(interaction.guild_id)
+        self.ctx.permissions.configure_guild(
+            interaction.guild_id, {Role.from_name(k): v for k, v in role_map.items()},
+        )
+        await interaction.followup.send(f"✅ Роль «{label}» -> {role.mention}", ephemeral=True)
+
+    @setup_group.command(name="ignore-role", description="Добавить/убрать одну роль из списка исключений лога (для больших списков)")
+    @app_commands.describe(role="Роль", ignored="True -- не логировать выдачу/снятие, False -- логировать снова")
+    @require(Role.ADMIN)
+    async def ignore_role(self, interaction: discord.Interaction, role: discord.Role, ignored: bool) -> None:
+        await interaction.response.defer(ephemeral=True)
+        settings = await self.ctx.guild_config().get_settings(interaction.guild_id)
+        current = set(settings.ignored_log_role_ids) if settings else set()
+        if ignored:
+            current.add(role.id)
+        else:
+            current.discard(role.id)
+        role_ids = list(current)
+
+        async with self.ctx.db.session() as session:
+            repo = GuildRepository(session)
+            await repo.get_or_create(interaction.guild_id, interaction.guild.name)
+            await repo.update_settings(interaction.guild_id, ignored_log_role_ids=role_ids)
+        self.ctx.guild_config().invalidate(interaction.guild_id)
+
+        verb = "больше не логируем" if ignored else "снова логируем"
+        await interaction.followup.send(f"✅ {role.mention} -- {verb} выдачу/снятие.", ephemeral=True)
 
     @setup_group.command(name="channel", description="Указать канал/категорию напрямую по ID/упоминанию (для больших списков)")
     @app_commands.describe(key="Что настраивается", channel="Канал или категория (можно вставить #упоминание или ID)")
