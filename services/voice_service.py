@@ -89,6 +89,12 @@ class VoiceService:
             record = await repo.get_by_channel_id(channel_id)
             return record.owner_id if record else None
 
+    async def get_room(self, channel_id: int):
+        """Запись о комнате (режим, лимит, владелец) -- для ``/voice info``."""
+        async with self.db.session() as session:
+            repo = VoiceRepository(session)
+            return await repo.get_by_channel_id(channel_id)
+
     async def set_mode(self, channel: discord.VoiceChannel, mode: str) -> None:
         default_role = channel.guild.default_role
         if mode == MODE_PUBLIC:

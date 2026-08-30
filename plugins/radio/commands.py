@@ -119,6 +119,8 @@ class RadioCog(commands.Cog):
             await repo.remove(track.id)
 
         (DATA_DIR / track.file_path).unlink(missing_ok=True)
+        if track.cover_path:
+            (DATA_DIR / track.cover_path).unlink(missing_ok=True)
 
         player = self.plugin.player_for(interaction.guild_id)
         await player.refresh_tracks()
@@ -166,6 +168,42 @@ class RadioCog(commands.Cog):
             return
         await player.skip()
         await interaction.followup.send("⏭ Переключено на следующий трек.", ephemeral=True)
+
+    @radio_group.command(name="volume", description="Установить громкость радио")
+    @app_commands.describe(percent="Громкость в процентах (0 = без звука, 100 = обычная, 200 = максимум)")
+    @require(Role.MODERATOR)
+    async def volume(self, interaction: discord.Interaction, percent: app_commands.Range[int, 0, 200]) -> None:
+        await interaction.response.defer(ephemeral=True)
+        player = self.plugin.player_for(interaction.guild_id)
+        player.set_volume(percent / 100)
+        await interaction.followup.send(f"🔊 Громкость радио: **{percent}%**.", ephemeral=True)
+
+    @radio_group.command(name="nowplaying", description="Показать, что сейчас играет")
+    async def nowplaying(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        player = self.plugin.player_for(interaction.guild_id)
+        if player.current is None:
+            await interaction.followup.send("Радио сейчас не играет.", ephemeral=True)
+            return
+        embed, cover_file = self.plugin.build_now_playing_embed(player.current, player)
+        await interaction.followup.send(embed=embed, file=cover_file if cover_file else discord.utils.MISSING, ephemeral=True)
+
+    @radio_group.command(name="queue", description="Показать следующие треки в очереди")
+    async def queue(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        player = self.plugin.player_for(interaction.guild_id)
+        total = len(player.tracks)
+        if total == 0:
+            await interaction.followup.send("Плейлист пуст.", ephemeral=True)
+            return
+        if total == 1:
+            await interaction.followup.send("В плейлисте только один трек -- он играет по кругу.", ephemeral=True)
+            return
+
+        upcoming = [player.tracks[(player.index + 1 + i) % total] for i in range(min(5, total - 1))]
+        lines = [f"`{i + 1}.` {t.title}" + (f" -- {t.artist}" if t.artist else "") for i, t in enumerate(upcoming)]
+        embed = discord.Embed(title="⏭ Дальше в очереди", description="\n".join(lines), color=discord.Color.blurple())
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 def build_radio_cog(ctx, plugin) -> RadioCog:

@@ -44,6 +44,8 @@ class RadioPlayer:
         self.voice_client: discord.VoiceClient | None = None
         self.tracks: list[RadioTrack] = []
         self.index: int = 0
+        self.volume: float = 1.0  # 1.0 = 100%, регулируется /radio volume
+        self._source: discord.PCMVolumeTransformer | None = None
 
     @property
     def current(self) -> RadioTrack | None:
@@ -77,6 +79,7 @@ class RadioPlayer:
         if self.voice_client.is_connected():
             await self.voice_client.disconnect(force=True)
         self.voice_client = None
+        self._source = None
 
     async def skip(self) -> None:
         if self.voice_client is not None and (self.voice_client.is_playing() or self.voice_client.is_paused()):
@@ -89,6 +92,13 @@ class RadioPlayer:
     def _advance(self) -> None:
         if self.tracks:
             self.index = (self.index + 1) % len(self.tracks)
+
+    def set_volume(self, volume: float) -> None:
+        """Меняет громкость на лету, без перезапуска трека -- ``PCMVolumeTransformer``
+        читает ``.volume`` перед каждым аудио-пакетом."""
+        self.volume = volume
+        if self._source is not None:
+            self._source.volume = volume
 
     async def _play_current(self) -> None:
         track = self.current
@@ -103,7 +113,8 @@ class RadioPlayer:
             return
 
         try:
-            source = discord.FFmpegPCMAudio(str(path))
+            source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(str(path)), volume=self.volume)
+            self._source = source
             self.voice_client.play(source, after=self._on_finished)
         except discord.ClientException:
             logger.exception(
@@ -175,7 +186,7 @@ class RadioPlugin(BasePlugin):
             return
 
         player = self.player_for(guild_id)
-        embed, cover_file = self._build_now_playing_embed(track, player)
+        embed, cover_file = self.build_now_playing_embed(track, player)
 
         async with self.ctx.db.session() as session:
             existing = await DashboardRepository(session).get(guild_id, DASHBOARD_KIND)
@@ -203,7 +214,7 @@ class RadioPlugin(BasePlugin):
                     guild_id=guild_id, kind=DASHBOARD_KIND, channel_id=channel_id, message_id=message.id
                 )
 
-    def _build_now_playing_embed(self, track: RadioTrack, player: RadioPlayer) -> tuple[discord.Embed, discord.File | None]:
+    def build_now_playing_embed(self, track: RadioTrack, player: RadioPlayer) -> tuple[discord.Embed, discord.File | None]:
         """Собирает карточку в стиле "DJ Paimon": крупный заголовок
         (альбом/OST), жирное название трека и список технических полей,
         плюс обложка, извлечённая из тегов файла при добавлении."""

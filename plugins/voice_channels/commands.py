@@ -43,6 +43,34 @@ class VoiceCog(commands.Cog):
             await interaction.followup.send(f"⚠️ {exc}", ephemeral=True)
             return None
 
+    @voice_group.command(name="info", description="Показать текущие настройки вашей комнаты")
+    async def info(self, interaction: discord.Interaction) -> None:
+        channel = await self._owned_channel_or_error(interaction)
+        if channel is None:
+            return
+
+        record = await self.service.get_room(channel.id)
+        mode_labels = {MODE_PUBLIC: "🔓 Открыта", MODE_PRIVATE: "🙈 Скрыта", MODE_LOCKED: "🔒 Закрыта"}
+        mode_label = mode_labels.get(record.mode, record.mode) if record else "—"
+        limit_label = str(record.member_limit) if record and record.member_limit else "без лимита"
+
+        allowed, denied = [], []
+        for target, overwrite in channel.overwrites.items():
+            if target in (channel.guild.default_role, interaction.user):
+                continue
+            if overwrite.connect is True:
+                allowed.append(target.mention if hasattr(target, "mention") else str(target))
+            elif overwrite.connect is False:
+                denied.append(target.mention if hasattr(target, "mention") else str(target))
+
+        embed = discord.Embed(title=f"ℹ️ {channel.name}", color=discord.Color.blue())
+        embed.add_field(name="Режим", value=mode_label, inline=True)
+        embed.add_field(name="Лимит участников", value=limit_label, inline=True)
+        embed.add_field(name="Сейчас в комнате", value=str(len(channel.members)), inline=True)
+        embed.add_field(name="Разрешён вход (/voice allow)", value=", ".join(allowed) or "—", inline=False)
+        embed.add_field(name="Запрещён вход (/voice deny/ban)", value=", ".join(denied) or "—", inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
     @voice_group.command(name="name", description="Переименовать комнату")
     async def name(self, interaction: discord.Interaction, name: str) -> None:
         channel = await self._owned_channel_or_error(interaction)
