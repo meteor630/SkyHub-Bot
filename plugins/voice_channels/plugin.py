@@ -48,7 +48,11 @@ class VoiceEventsCog(commands.Cog):
         view = VoiceControlView(self.service)
         embed = discord.Embed(
             title=f"✈️ {channel.name}",
-            description="Это ваша личная голосовая комната. Управляйте ей кнопками ниже или командой `/voice`.",
+            description=(
+                "Это ваша личная голосовая комната. Управляйте ей кнопками ниже, командой `/voice` "
+                "или прямо в настройках канала Discord (⚙️ рядом с названием -> **Изменить канал** -> "
+                "**Разрешения**) -- вам выданы права управлять каналом и его правами доступа напрямую."
+            ),
             color=discord.Color.blue(),
         )
         try:

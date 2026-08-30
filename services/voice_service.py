@@ -38,8 +38,14 @@ class VoiceService:
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(connect=True, view_channel=True),
+            # manage_permissions -- ключевое право: без него Discord не даёт
+            # владельцу открыть вкладку "Разрешения" в настройках канала.
+            # С ним участник сам управляет доступом через нативный интерфейс
+            # Discord (⚙️ у канала -> Изменить канал -> Разрешения), а не
+            # только через команды /voice allow|deny|kick|ban.
             member: discord.PermissionOverwrite(
-                connect=True, view_channel=True, manage_channels=True, move_members=True
+                connect=True, view_channel=True, manage_channels=True, manage_permissions=True,
+                move_members=True, mute_members=True, deafen_members=True,
             ),
         }
         channel = await guild.create_voice_channel(name=name, category=category, overwrites=overwrites)
@@ -114,7 +120,8 @@ class VoiceService:
     async def transfer_owner(self, channel: discord.VoiceChannel, new_owner: discord.Member, old_owner: discord.Member) -> None:
         await channel.set_permissions(old_owner, overwrite=None)
         await channel.set_permissions(
-            new_owner, connect=True, view_channel=True, manage_channels=True, move_members=True
+            new_owner, connect=True, view_channel=True, manage_channels=True, manage_permissions=True,
+            move_members=True, mute_members=True, deafen_members=True,
         )
         async with self.db.session() as session:
             repo = VoiceRepository(session)
