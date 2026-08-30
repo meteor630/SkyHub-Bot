@@ -50,6 +50,8 @@ discord.py обновляет мгновенно по гейтвей-событ�
 """
 from __future__ import annotations
 
+import io
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -705,19 +707,30 @@ class ServerSetupCog(commands.Cog):
         embed.add_field(name="Роль модератора", value=fmt_role(settings.moderator_role_id))
         embed.add_field(name="Роль Поддержки", value=fmt_role(settings.support_role_id))
 
-        if settings.ignored_log_role_ids:
-            ignored = ", ".join(f"<@&{rid}>" for rid in settings.ignored_log_role_ids)
-        else:
-            ignored = "—"
+        ignored = (
+            ", ".join(f"<@&{rid}>" for rid in settings.ignored_log_role_ids)
+            if settings.ignored_log_role_ids else "—"
+        )
+        profile_roles = (
+            ", ".join(f"{key}: <@&{rid}>" for key, rid in settings.profile_role_ids.items())
+            if settings.profile_role_ids else "—"
+        )
         embed.add_field(name="Роли без логирования", value=ignored[:1024], inline=False)
-
-        if settings.profile_role_ids:
-            profile_roles = ", ".join(f"{key}: <@&{rid}>" for key, rid in settings.profile_role_ids.items())
-        else:
-            profile_roles = "—"
         embed.add_field(name="Роли авиапрофилей", value=profile_roles[:1024], inline=False)
 
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        # Конфигурация может со временем разрастись настолько, что не
+        # влезет в лимит embed-поля (1024 символа) -- тогда обрезанный
+        # выше текст молча терял бы часть ролей. Прикладываем файлом
+        # полную, необрезанную версию, если хоть одно поле не влезло.
+        file = None
+        if len(ignored) > 1024 or len(profile_roles) > 1024:
+            full_text = (
+                f"Роли без логирования:\n{ignored}\n\nРоли авиапрофилей:\n{profile_roles}\n"
+            )
+            file = discord.File(io.BytesIO(full_text.encode("utf-8")), filename="setup_show_full.txt")
+            embed.set_footer(text="Конфигурация не поместилась целиком в это сообщение -- полный список во вложенном файле")
+
+        await interaction.followup.send(embed=embed, file=file if file else discord.utils.MISSING, ephemeral=True)
 
 
 def build_server_setup_cog(ctx) -> ServerSetupCog:
