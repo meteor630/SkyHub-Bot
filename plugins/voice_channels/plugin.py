@@ -35,11 +35,8 @@ class VoiceEventsCog(commands.Cog):
         try:
             if after.channel is not None:
                 user_limit = await self._creator_channel_limit(member.guild.id, after.channel.id)
-                if user_limit is not None:
-                    if self._check_and_bump_cooldown(member.id):
-                        await self._create_room_for(member, user_limit=user_limit)
-                    else:
-                        await self._notify_cooldown(member)
+                if user_limit is not None and self._check_and_bump_cooldown(member.id):
+                    await self._create_room_for(member, user_limit=user_limit)
 
             if before.channel is not None:
                 await self._maybe_schedule_deletion(before.channel)
@@ -64,16 +61,6 @@ class VoiceEventsCog(commands.Cog):
             return 0
         presets = await self.ctx.guild_config().voice_creator_presets(guild_id)
         return presets.get(channel_id)
-
-    async def _notify_cooldown(self, member: discord.Member) -> None:
-        remaining = int(ROOM_CREATE_COOLDOWN_SECONDS)
-        try:
-            await member.send(
-                f"⏳ Вы недавно уже создавали комнату -- подождите примерно {remaining} секунд и зайдите в "
-                "канал-создатель ещё раз."
-            )
-        except discord.HTTPException:
-            pass  # ЛС закрыты -- не критично, это просто защита от спама, не сама фича
 
     def _capabilities_embed(self, channel: discord.VoiceChannel, user_limit: int) -> discord.Embed:
         limit_note = (
@@ -142,11 +129,6 @@ class VoiceEventsCog(commands.Cog):
             await channel.send(f"{member.mention}, ваша комната готова!", embed=embed, view=view, silent=True)
         except discord.HTTPException as exc:
             await self.ctx.report_error(exc, event="post_voice_control_panel", guild_id=member.guild.id)
-
-        try:
-            await member.send(f"✈️ Комната **{channel.name}** на сервере **{member.guild.name}** создана.", embed=embed)
-        except discord.HTTPException:
-            pass  # ЛС закрыты -- не критично, инструкция уже есть в самом канале
 
     async def _maybe_schedule_deletion(self, channel: discord.VoiceChannel) -> None:
         record = await self.service.get_owner_id(channel.id)
