@@ -25,6 +25,26 @@ class ModerationCog(commands.Cog):
             )
         )
 
+    async def _check_hierarchy(self, interaction: discord.Interaction, member: discord.Member) -> bool:
+        """Запрещает модератору применять наказания к себе или к
+        участнику с равным/более высоким уровнем доступа -- иначе более
+        младший модератор мог бы забанить/замьютить старшего или другого
+        модератора (найдено при аудите безопасности). Сам владелец
+        сервера всё равно защищён от бана/кика на уровне API Discord --
+        это дополнительный барьер именно для действий друг на друга."""
+        if member.id == interaction.user.id:
+            await interaction.followup.send("⚠️ Нельзя применить это к самому себе.", ephemeral=True)
+            return False
+        actor_role = self.ctx.permissions.resolve(interaction.user)
+        target_role = self.ctx.permissions.resolve(member)
+        if target_role >= actor_role:
+            await interaction.followup.send(
+                "⚠️ Недостаточно прав -- нельзя применить это к участнику с таким же или более высоким уровнем доступа.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
     @mod_group.command(name="ban", description="Забанить участника")
     @app_commands.describe(member="Кого забанить", reason="Причина", delete_days="Удалить сообщения за N дней (0-7)")
     @require(Role.MODERATOR)
@@ -33,6 +53,8 @@ class ModerationCog(commands.Cog):
         self, interaction: discord.Interaction, member: discord.Member, reason: str | None = None, delete_days: int = 0
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+        if not await self._check_hierarchy(interaction, member):
+            return
         await self.service.ban(interaction.guild, member, interaction.user, reason, delete_message_days=max(0, min(delete_days, 7)))
         self._emit(interaction.guild_id, "ban", interaction.user, member.id, reason)
         await interaction.followup.send(f"🔨 {member.mention} забанен(а). Причина: {reason or '—'}", ephemeral=True)
@@ -57,6 +79,8 @@ class ModerationCog(commands.Cog):
     @app_commands.checks.cooldown(3, 30.0)
     async def kick(self, interaction: discord.Interaction, member: discord.Member, reason: str | None = None) -> None:
         await interaction.response.defer(ephemeral=True)
+        if not await self._check_hierarchy(interaction, member):
+            return
         await self.service.kick(interaction.guild, member, interaction.user, reason)
         self._emit(interaction.guild_id, "kick", interaction.user, member.id, reason)
         await interaction.followup.send(f"👢 {member.mention} выгнан(а). Причина: {reason or '—'}", ephemeral=True)
@@ -69,6 +93,8 @@ class ModerationCog(commands.Cog):
         self, interaction: discord.Interaction, member: discord.Member, minutes: app_commands.Range[int, 1, 40320], reason: str | None = None
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+        if not await self._check_hierarchy(interaction, member):
+            return
         await self.service.timeout(member, interaction.user, minutes, reason)
         self._emit(interaction.guild_id, "timeout", interaction.user, member.id, reason, minutes=minutes)
         await interaction.followup.send(f"⏱ {member.mention} получил(а) тайм-аут на {minutes} мин.", ephemeral=True)
@@ -79,6 +105,8 @@ class ModerationCog(commands.Cog):
     @app_commands.checks.cooldown(5, 30.0)
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str | None = None) -> None:
         await interaction.response.defer(ephemeral=True)
+        if not await self._check_hierarchy(interaction, member):
+            return
         count = await self.service.warn(interaction.guild_id, member.id, interaction.user, reason)
         self._emit(interaction.guild_id, "warn", interaction.user, member.id, reason, total_warnings=count)
         await interaction.followup.send(f"⚠️ {member.mention} предупрежден(а) (всего: {count}).", ephemeral=True)

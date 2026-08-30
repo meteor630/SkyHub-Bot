@@ -1,12 +1,21 @@
 """``/weather`` -- METAR/TAF по коду ICAO (ТЗ §41)."""
 from __future__ import annotations
 
+import re
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from plugins.weather.service import WeatherError, fetch_raw, parse_metar, strip_report_prefix
 from utils.text import truncate
+
+# Настоящие ICAO-коды аэропортов -- ровно 4 латинские буквы/цифры
+# (напр. ULLI, KJFK). Проверяем формат до похода во внешний API --
+# отклоняем мусор сразу, а не по ответу стороннего сервиса (найдено
+# при аудите безопасности: без проверки в запрос уходила бы любая
+# строка произвольной длины, введённая пользователем).
+_ICAO_PATTERN = re.compile(r"^[A-Z0-9]{4}$")
 
 
 class WeatherCog(commands.Cog):
@@ -21,6 +30,9 @@ class WeatherCog(commands.Cog):
     async def metar(self, interaction: discord.Interaction, icao: str) -> None:
         await interaction.response.defer()
         icao = icao.strip().upper()
+        if not _ICAO_PATTERN.match(icao):
+            await interaction.followup.send("⚠️ Код ICAO должен состоять ровно из 4 латинских букв/цифр, напр. `ULLI`.")
+            return
         try:
             raw = await fetch_raw(self.plugin.session, "metar", icao)
             obs = parse_metar(raw)
@@ -47,6 +59,9 @@ class WeatherCog(commands.Cog):
     async def taf(self, interaction: discord.Interaction, icao: str) -> None:
         await interaction.response.defer()
         icao = icao.strip().upper()
+        if not _ICAO_PATTERN.match(icao):
+            await interaction.followup.send("⚠️ Код ICAO должен состоять ровно из 4 латинских букв/цифр, напр. `ULLI`.")
+            return
         try:
             raw = await fetch_raw(self.plugin.session, "taf", icao)
         except WeatherError as exc:

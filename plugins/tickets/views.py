@@ -23,6 +23,12 @@ class TicketPanelView(discord.ui.View):
     def __init__(self, ctx) -> None:
         super().__init__(timeout=None)
         self.ctx = ctx
+        # Защита от гонки: между проверкой open_count_for_user и вставкой
+        # новой записи в БД есть асинхронный промежуток -- пара быстрых
+        # повторных нажатий (двойной клик, автокликер) иначе могла бы
+        # пройти проверку лимита одновременно и создать больше каналов,
+        # чем MAX_OPEN_TICKETS_PER_USER (найдено при аудите безопасности).
+        self._creating: set[tuple[int, int]] = set()
 
     @discord.ui.button(label="Создать обращение", emoji="🎫", style=discord.ButtonStyle.primary, custom_id="tickets:create")
     async def create(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -31,6 +37,17 @@ class TicketPanelView(discord.ui.View):
         if guild is None:
             return
 
+        key = (guild.id, interaction.user.id)
+        if key in self._creating:
+            await interaction.followup.send("⚠️ Обращение уже создаётся -- подождите пару секунд.", ephemeral=True)
+            return
+        self._creating.add(key)
+        try:
+            await self._create_ticket(interaction, guild)
+        finally:
+            self._creating.discard(key)
+
+    async def _create_ticket(self, interaction: discord.Interaction, guild: discord.Guild) -> None:
         category_id = await self.ctx.guild_config().resolve_category_id(guild.id, "tickets")
         category = guild.get_channel(category_id) if category_id else None
         if not isinstance(category, discord.CategoryChannel):
