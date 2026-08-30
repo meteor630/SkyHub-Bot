@@ -272,6 +272,18 @@ class MiscChannelsSetupView(discord.ui.View):
         category_select.callback = self._make_callback(category_select, "temporary_voice_category_id", "Категория временных voice")
         self.add_item(category_select)
 
+        # Доп. быстрые создатели с фиксированным лимитом мест -- в
+        # отличие от основного (без лимита), заходя сюда участник сразу
+        # получает комнату на 2/4 места, без необходимости выставлять
+        # лимит вручную командой /voice limit.
+        for limit in (2, 4):
+            preset_select = ManualChannelSelect(
+                guild=guild, channel_types=(discord.ChannelType.voice,),
+                placeholder=f"Быстрый создатель: комната на {limit}",
+            )
+            preset_select.callback = self._make_preset_callback(preset_select, limit)
+            self.add_item(preset_select)
+
     def _make_callback(self, select: discord.ui.Select, attr: str, label: str):
         async def callback(interaction: discord.Interaction) -> None:
             channel = await _resolve_selected_channel(interaction, select)
@@ -283,6 +295,25 @@ class MiscChannelsSetupView(discord.ui.View):
                 await repo.update_settings(interaction.guild_id, **{attr: channel.id})
             self.ctx.guild_config().invalidate(interaction.guild_id)
             await interaction.response.send_message(f"✅ {label} -> {channel.mention}", ephemeral=True)
+
+        return callback
+
+    def _make_preset_callback(self, select: discord.ui.Select, limit: int):
+        async def callback(interaction: discord.Interaction) -> None:
+            channel = await _resolve_selected_channel(interaction, select)
+            if channel is None:
+                return
+            async with self.ctx.db.session() as session:
+                repo = GuildRepository(session)
+                await repo.get_or_create(interaction.guild_id, interaction.guild.name)
+                settings = await repo.get_or_create_settings(interaction.guild_id)
+                presets = dict(settings.voice_creator_presets or {})
+                presets[str(channel.id)] = limit
+                await repo.update_settings(interaction.guild_id, voice_creator_presets=presets)
+            self.ctx.guild_config().invalidate(interaction.guild_id)
+            await interaction.response.send_message(
+                f"✅ Быстрый создатель на {limit} мест -> {channel.mention}", ephemeral=True
+            )
 
         return callback
 
@@ -471,7 +502,8 @@ class ServerSetupCog(commands.Cog):
     @require(Role.ADMIN)
     async def voice(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(
-            "Настройте приветственный канал и временные голосовые:",
+            "Настройте приветственный канал, обычный (без лимита) и быстрые (на 2/на 4 места) "
+            "создатели временных голосовых комнат:",
             view=MiscChannelsSetupView(self.ctx, interaction.guild), ephemeral=True,
         )
 
@@ -653,6 +685,11 @@ class ServerSetupCog(commands.Cog):
         embed.add_field(name="Приветствие", value=fmt_channel(settings.welcome_channel_id))
         embed.add_field(name="Создание voice", value=fmt_channel(settings.temporary_voice_creator_channel_id))
         embed.add_field(name="Категория voice", value=fmt_channel(settings.temporary_voice_category_id))
+        if settings.voice_creator_presets:
+            presets = ", ".join(f"{fmt_channel(int(cid))} (на {limit})" for cid, limit in settings.voice_creator_presets.items())
+        else:
+            presets = "—"
+        embed.add_field(name="Быстрые создатели voice", value=presets, inline=False)
         embed.add_field(name="Статус бота", value=fmt_channel(settings.status_channel_id))
         embed.add_field(name="Радио: голосовой канал", value=fmt_channel(settings.radio_voice_channel_id))
         embed.add_field(name="Радио: \"сейчас играет\"", value=fmt_channel(settings.radio_text_channel_id))

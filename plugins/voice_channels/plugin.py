@@ -26,22 +26,34 @@ class VoiceEventsCog(commands.Cog):
         self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
     ) -> None:
         try:
-            creator_id = await self.ctx.guild_config().resolve_channel_id(member.guild.id, "temporary_voice_creator")
-            if after.channel is not None and creator_id and after.channel.id == creator_id:
-                await self._create_room_for(member)
+            if after.channel is not None:
+                user_limit = await self._creator_channel_limit(member.guild.id, after.channel.id)
+                if user_limit is not None:
+                    await self._create_room_for(member, user_limit=user_limit)
 
             if before.channel is not None:
                 await self._maybe_schedule_deletion(before.channel)
         except Exception as exc:  # noqa: BLE001
             await self.ctx.report_error(exc, event="on_voice_state_update", guild_id=member.guild.id, user_id=member.id)
 
-    async def _create_room_for(self, member: discord.Member) -> None:
+    async def _creator_channel_limit(self, guild_id: int, channel_id: int) -> int | None:
+        """``None``, если этот канал -- не канал-создатель. Иначе -- лимит
+        участников будущей комнаты (``0`` = без лимита, обычный
+        ``/setup voice`` создатель; иначе -- один из доп. пресетов, напр.
+        быстрые "на 2"/"на 4")."""
+        creator_id = await self.ctx.guild_config().resolve_channel_id(guild_id, "temporary_voice_creator")
+        if creator_id and channel_id == creator_id:
+            return 0
+        presets = await self.ctx.guild_config().voice_creator_presets(guild_id)
+        return presets.get(channel_id)
+
+    async def _create_room_for(self, member: discord.Member, *, user_limit: int = 0) -> None:
         category_id = await self.ctx.guild_config().resolve_category_id(member.guild.id)
         category = member.guild.get_channel(category_id) if category_id else None
         if category is not None and not isinstance(category, discord.CategoryChannel):
             category = None
 
-        channel = await self.service.create_room(member=member, category=category)
+        channel = await self.service.create_room(member=member, category=category, user_limit=user_limit)
         await member.move_to(channel, reason="Создана временная голосовая комната")
         self.ctx.emit(VoiceCreated(guild_id=member.guild.id, channel_id=channel.id, owner_id=member.id))
 
@@ -49,9 +61,12 @@ class VoiceEventsCog(commands.Cog):
         embed = discord.Embed(
             title=f"✈️ {channel.name}",
             description=(
-                "Это ваша личная голосовая комната. Управляйте ей кнопками ниже, командой `/voice` "
-                "или прямо в настройках канала Discord (⚙️ рядом с названием -> **Изменить канал** -> "
-                "**Разрешения**) -- вам выданы права управлять каналом и его правами доступа напрямую."
+                "Это ваша личная голосовая комната. Управляйте ей кнопками ниже или командой `/voice` "
+                "(доступ участников, лимит, переименование). Отключить кого-то от разговора и "
+                "переименовать/поменять лимит можно и прямо в интерфейсе Discord -- а вот вкладку "
+                "\"Разрешения\" и заглушение микрофона участникам мы туда намеренно не выдаём: "
+                "заглушение в Discord привязано к участнику на весь сервер и осталось бы с ним даже "
+                "после выхода из этой комнаты."
             ),
             color=discord.Color.blue(),
         )

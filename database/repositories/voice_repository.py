@@ -11,10 +11,10 @@ from database.repositories.base import BaseRepository
 
 class VoiceRepository(BaseRepository[TemporaryVoiceChannel]):
     async def create(
-        self, *, guild_id: int, channel_id: int, owner_id: int, name: str, mode: str = "public"
+        self, *, guild_id: int, channel_id: int, owner_id: int, name: str, mode: str = "public", member_limit: int = 0
     ) -> TemporaryVoiceChannel:
         record = TemporaryVoiceChannel(
-            guild_id=guild_id, channel_id=channel_id, owner_id=owner_id, name=name, mode=mode
+            guild_id=guild_id, channel_id=channel_id, owner_id=owner_id, name=name, mode=mode, member_limit=member_limit
         )
         self.session.add(record)
         await self.session.flush()

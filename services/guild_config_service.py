@@ -108,6 +108,15 @@ class GuildConfigService:
             return set()
         return {int(role_id) for role_id in settings.ignored_log_role_ids}
 
+    async def voice_creator_presets(self, guild_id: int) -> dict[int, int]:
+        """Доп. каналы-создатели временных voice с фиксированным лимитом
+        мест (напр. быстрые "на 2"/"на 4") -- см. ``/setup voice``.
+        Возвращает {ID канала-создателя: лимит участников}."""
+        settings = await self.get_settings(guild_id)
+        if settings is None or not settings.voice_creator_presets:
+            return {}
+        return {int(channel_id): int(limit) for channel_id, limit in settings.voice_creator_presets.items()}
+
     async def resolve_profile_role_id(self, guild_id: int, role_type: str) -> int | None:
         """Discord-роль, соответствующая типу авиационного профиля
         (pilot/atc/...) -- см. ``/setup profile-roles``."""

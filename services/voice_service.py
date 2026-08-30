@@ -32,27 +32,36 @@ class VoiceService:
         member: discord.Member,
         category: discord.CategoryChannel | None,
         name_template: str = "✈️ Комната {name}",
+        user_limit: int = 0,
     ) -> discord.VoiceChannel:
         guild = member.guild
         name = name_template.format(name=member.display_name)[:100]
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(connect=True, view_channel=True),
-            # manage_permissions -- ключевое право: без него Discord не даёт
-            # владельцу открыть вкладку "Разрешения" в настройках канала.
-            # С ним участник сам управляет доступом через нативный интерфейс
-            # Discord (⚙️ у канала -> Изменить канал -> Разрешения), а не
-            # только через команды /voice allow|deny|kick|ban.
+            # ВАЖНО: НЕ выдавать здесь manage_permissions/mute_members/
+            # deafen_members. mute_members/deafen_members в Discord -- это
+            # не действие "внутри канала", а изменение guild-wide голосового
+            # состояния участника (Member.voice.mute/deaf) -- если владелец
+            # комнаты заглушит кого-то этим правом, заглушка останется с
+            # человеком и после того, как он выйдет из этой комнаты и
+            # зайдёт в любую другую (реальная уязвимость, была найдена на
+            # практике). manage_permissions открывает вкладку "Разрешения"
+            # и позволяет менять доступ РОЛЕЙ и других участников -- тоже
+            # больше, чем нужно рядовому владельцу временной комнаты.
+            # move_members ("отключить кого-то от войса") такой утечки не
+            # создаёт -- это разовое действие без сохраняющегося состояния.
             member: discord.PermissionOverwrite(
-                connect=True, view_channel=True, manage_channels=True, manage_permissions=True,
-                move_members=True, mute_members=True, deafen_members=True,
+                connect=True, view_channel=True, manage_channels=True, move_members=True,
             ),
         }
-        channel = await guild.create_voice_channel(name=name, category=category, overwrites=overwrites)
+        channel = await guild.create_voice_channel(
+            name=name, category=category, overwrites=overwrites, user_limit=max(0, min(user_limit, 99)),
+        )
 
         async with self.db.session() as session:
             repo = VoiceRepository(session)
-            await repo.create(guild_id=guild.id, channel_id=channel.id, owner_id=member.id, name=name)
+            await repo.create(guild_id=guild.id, channel_id=channel.id, owner_id=member.id, name=name, member_limit=user_limit)
 
         logger.info("Создан временный голосовой канал '%s' для %s", name, member, extra={"plugin": "voice_channels"})
         return channel
@@ -119,9 +128,10 @@ class VoiceService:
 
     async def transfer_owner(self, channel: discord.VoiceChannel, new_owner: discord.Member, old_owner: discord.Member) -> None:
         await channel.set_permissions(old_owner, overwrite=None)
+        # См. комментарий в create_room -- намеренно без manage_permissions/
+        # mute_members/deafen_members.
         await channel.set_permissions(
-            new_owner, connect=True, view_channel=True, manage_channels=True, manage_permissions=True,
-            move_members=True, mute_members=True, deafen_members=True,
+            new_owner, connect=True, view_channel=True, manage_channels=True, move_members=True,
         )
         async with self.db.session() as session:
             repo = VoiceRepository(session)

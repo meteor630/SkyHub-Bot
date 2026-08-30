@@ -43,6 +43,17 @@ async def test_create_room_persists_and_records_owner(session) -> None:
     assert fetched.owners[0].left_owner_at is None
 
 
+async def test_create_room_with_member_limit_preset(session) -> None:
+    """Быстрые создатели ("на 2"/"на 4") передают лимит уже при создании
+    записи, не только через отдельный /voice limit."""
+    repo = VoiceRepository(session)
+    room = await repo.create(guild_id=GUILD_ID, channel_id=CHANNEL_ID, owner_id=OWNER_ID, name="Test Room", member_limit=2)
+    assert room.member_limit == 2
+
+    fetched = await repo.get_by_channel_id(CHANNEL_ID)
+    assert fetched.member_limit == 2
+
+
 async def test_set_mode_and_rename(session) -> None:
     repo = VoiceRepository(session)
     await repo.create(guild_id=GUILD_ID, channel_id=CHANNEL_ID, owner_id=OWNER_ID, name="Test Room")

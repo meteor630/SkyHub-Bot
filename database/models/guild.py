@@ -36,6 +36,12 @@ class GuildSettings(Base):
     temporary_voice_creator_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     temporary_voice_category_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
+    # {"<ID голосового канала-создателя>": <лимит участников>, ...} -- доп.
+    # каналы-"создатели" с фиксированным лимитом мест в комнате (напр.
+    # быстрые "на 2"/"на 4"), в дополнение к обычному
+    # temporary_voice_creator_channel_id (без лимита). См. plugins/voice_channels.
+    voice_creator_presets: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
+
     radio_voice_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     radio_text_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
