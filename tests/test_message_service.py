@@ -103,6 +103,29 @@ def test_mixed_heading_sizes_appear_in_authored_order() -> None:
     assert description == "# Большой\n1\n### Маленький\n2\n# Снова большой\n3"
 
 
+def test_bold_heading_zero_gets_blank_line_before_it_since_it_has_no_own_margin() -> None:
+    """Регрессия: heading 1/2/3 (#/##/###) рисует отступ сверху сам, а
+    heading 0 (просто жирным) -- нет, поэтому перед НИМ (и перед ним
+    самим, если следом идёт ещё один heading 0/обычный текст) нужна явная
+    пустая строка, иначе он слипается с предыдущим текстом."""
+    spec = build_message_spec(
+        {
+            "description": "Вступление",
+            "sections": [
+                {"title": "Жирный", "content": "1", "heading": 0},
+                {"title": "Настоящий", "content": "2", "heading": 3},
+            ],
+        }
+    )
+    pages = MessageRenderer().render(spec)
+    description = pages[0][0].description
+    # Перед "**Жирный**" (heading 0, своего отступа нет) -- пустая строка.
+    assert description.startswith("Вступление\n\n**Жирный**\n1")
+    # Перед "### Настоящий" (heading 3, отступ рисует сам Discord) --
+    # без лишней пустой строки, иначе получится двойной отступ.
+    assert "1\n### Настоящий" in description
+
+
 # -- вложенная цитата (сноска ВНУТРИ общей карточки, серая полоска) -------
 
 def test_blockquote_section_prefixes_every_line() -> None:

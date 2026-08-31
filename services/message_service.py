@@ -185,28 +185,40 @@ class MessageRenderer:
     def _build_blocks(self, spec: MessageSpec) -> list[tuple[str, int | None]]:
         """Собирает список ``(текст, цвет_или_None)`` -- обычные разделы
         подряд склеиваются в один блок (``color=None``), раздел со своим
-        ``color`` образует отдельный блок, чтобы стать своим embed'ом."""
+        ``color`` образует отдельный блок, чтобы стать своим embed'ом.
+
+        Отступ перед разделом ставится не всегда одинаково: настоящий
+        Discord-заголовок (``heading`` 1/2/3, `#`/`##`/`###`) сам рисует
+        отступ сверху -- лишняя пустая строка перед ним смотрится
+        избыточно. А вот у "жирного" псевдозаголовка (``heading: 0``,
+        по умолчанию) и у обычного текста собственного отступа нет --
+        без пустой строки разделы слипаются друг с другом."""
         blocks: list[tuple[str, int | None]] = []
-        running: list[str] = []
-        if spec.description:
-            running.append(spec.description.rstrip("\n"))
+        running = ""
+
+        def append_running(rendered: str, *, has_own_top_margin: bool) -> None:
+            nonlocal running
+            if not running:
+                running = rendered
+                return
+            separator = "\n" if has_own_top_margin else "\n\n"
+            running = f"{running}{separator}{rendered}"
 
         def flush() -> None:
+            nonlocal running
             if running:
-                # Одна пустая строка ("\n\n") между разделами визуально
-                # смотрится в Discord куда просторнее, чем в обычном
-                # тексте -- поэтому разделы идут подряд без неё; сам
-                # заголовок (жирный или #/##/###) и так чётко отделяет
-                # один раздел от другого.
-                blocks.append(("\n".join(running), None))
-                running.clear()
+                blocks.append((running, None))
+                running = ""
+
+        if spec.description:
+            running = spec.description.rstrip("\n")
 
         for section in spec.sections:
             if section.color is not None:
                 flush()
                 blocks.append((section.rendered_block(), section.color))
             else:
-                running.append(section.rendered_block())
+                append_running(section.rendered_block(), has_own_top_margin=section.heading in (1, 2, 3))
         flush()
         return blocks
 
