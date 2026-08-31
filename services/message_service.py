@@ -46,6 +46,18 @@ _HEADING_MARKDOWN = {1: "# ", 2: "## ", 3: "### "}
 
 MAX_EMBEDS_PER_MESSAGE = 10  # жёсткий лимит Discord на embed'ы в одном сообщении
 
+# Маркеры списка -- ровно те же 4 варианта, что в стандартной "Библиотеке
+# маркеров" Word (нет / закрашенный кружок / пустой кружок / квадрат).
+# У Discord нет понятия "маркированный список" со своим стилем -- это
+# просто символ, который мы сами приписываем перед строкой.
+_MARKERS = {"bullet": "•", "circle": "◦", "square": "▪", "none": ""}
+
+# Отступ вложенного подпункта. Discord схлопывает несколько подряд идущих
+# ОБЫЧНЫХ пробелов в один (как обычный HTML), поэтому для реального
+# визуального отступа используются неразрывные пробелы (U+00A0) -- их
+# Discord не схлопывает.
+_SUB_INDENT = " " * 4
+
 
 class AuthorSpec(BaseModel):
     enabled: bool = True
@@ -64,14 +76,29 @@ class MediaSpec(BaseModel):
     url: str | None = None
 
 
+class ListItemSpec(BaseModel):
+    """Пункт списка со своим вложенным подсписком (один уровень
+    вложенности -- этого достаточно для структуры вида "пункт, а под ним
+    А./Б./В."). Обычная строка вместо этого объекта -- пункт без вложенных."""
+
+    text: str
+    items: list[str] = Field(default_factory=list)
+
+
 class SectionSpec(BaseModel):
     title: str | None = None
-    content: str | list[str] | None = None
+    content: str | list[str | ListItemSpec] | None = None
     # 0 (по умолчанию) -- заголовок жирным, как в обычном тексте
     # (примерно как раньше выглядело имя embed-поля). 1/2/3 -- настоящий
     # Discord-заголовок #/##/### -- крупный/средний/мелкий, можно
     # свободно чередовать между разделами одного сообщения.
     heading: Literal[0, 1, 2, 3] = 0
+    # Маркер верхнего уровня списка и маркер вложенных подпунктов -- те же
+    # 4 варианта, что в "Библиотеке маркеров" Word: bullet (•, по
+    # умолчанию для верхнего уровня) / circle (◦, по умолчанию для
+    # вложенных) / square (▪) / none (без маркера, просто текст).
+    marker: Literal["bullet", "circle", "square", "none"] = "bullet"
+    sub_marker: Literal["bullet", "circle", "square", "none"] = "circle"
     # Вложенная цитата (Discord "> текст") -- тонкая полоска ВНУТРИ той
     # же карточки, что и весь остальной текст (общий цвет один на всё
     # сообщение). Именно так выглядит сноска на скриншотах у крупных
@@ -88,9 +115,26 @@ class SectionSpec(BaseModel):
     def rendered_content(self) -> str:
         if self.content is None:
             return ""
-        if isinstance(self.content, list):
-            return "\n".join(f"• {item}" for item in self.content)
-        return self.content
+        if isinstance(self.content, str):
+            # YAML-блоки "|" всегда добавляют один завершающий перенос
+            # строки -- без rstrip между разделами накапливались бы
+            # лишние пустые строки при склейке через "\n\n".join(...).
+            return self.content.rstrip("\n")
+
+        marker = _MARKERS.get(self.marker, "•")
+        sub_marker = _MARKERS.get(self.sub_marker, "◦")
+        top_prefix = f"{marker} " if marker else ""
+        sub_prefix = f"{sub_marker} " if sub_marker else ""
+
+        lines: list[str] = []
+        for entry in self.content:
+            if isinstance(entry, str):
+                lines.append(f"{top_prefix}{entry}")
+            else:
+                lines.append(f"{top_prefix}{entry.text}")
+                for sub in entry.items:
+                    lines.append(f"{_SUB_INDENT}{sub_prefix}{sub}")
+        return "\n".join(lines)
 
     def rendered_block(self) -> str:
         content = self.rendered_content()
@@ -145,7 +189,7 @@ class MessageRenderer:
         blocks: list[tuple[str, int | None]] = []
         running: list[str] = []
         if spec.description:
-            running.append(spec.description)
+            running.append(spec.description.rstrip("\n"))
 
         def flush() -> None:
             if running:

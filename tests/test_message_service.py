@@ -28,6 +28,44 @@ def test_invalid_spec_raises_validation_error() -> None:
         build_message_spec({"media": {"type": "not-a-real-type", "url": "https://example.com"}})
 
 
+# -- маркеры списка (bullet/circle/square/none) и вложенные подпункты ------
+
+@pytest.mark.parametrize("marker,symbol", [("bullet", "•"), ("circle", "◦"), ("square", "▪"), ("none", "")])
+def test_marker_choice_for_top_level_items(marker: str, symbol: str) -> None:
+    spec = build_message_spec({"sections": [{"content": ["Пункт"], "marker": marker}]})
+    expected = f"{symbol} Пункт" if symbol else "Пункт"
+    assert spec.sections[0].rendered_content() == expected
+
+
+def test_default_markers_match_bullet_top_and_circle_sub() -> None:
+    """По умолчанию -- закрашенный кружок сверху, пустой у вложенных
+    (ровно как в примере со скриншота: •, а под ним ○ А. / ○ Б.)."""
+    spec = build_message_spec(
+        {
+            "sections": [
+                {
+                    "content": [
+                        "Обычный пункт",
+                        {"text": "Пункт со вложенными", "items": ["Подпункт А", "Подпункт Б"]},
+                    ]
+                }
+            ]
+        }
+    )
+    lines = spec.sections[0].rendered_content().split("\n")
+    assert lines[0] == "• Обычный пункт"
+    assert lines[1] == "• Пункт со вложенными"
+    assert lines[2] == "    ◦ Подпункт А"
+    assert lines[3] == "    ◦ Подпункт Б"
+
+
+def test_sub_marker_can_be_overridden_to_square() -> None:
+    spec = build_message_spec(
+        {"sections": [{"content": [{"text": "Пункт", "items": ["Вложенный"]}], "sub_marker": "square"}]}
+    )
+    assert spec.sections[0].rendered_content() == "• Пункт\n    ▪ Вложенный"
+
+
 # -- заголовки разного размера (0 = жирным, 1/2/3 = #/##/###) --------------
 
 def test_section_heading_zero_renders_bold_not_markdown_header() -> None:
