@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from services.message_service import MessageRenderer, build_message_spec
-from utils.text import split_text
+from services.message_service import DEFAULT_COLOR, MessageRenderer, build_message_spec
+from utils.text import DISCORD_EMBED_TOTAL_LIMIT, split_text
 
 
 def test_build_message_spec_from_plain_dict() -> None:
@@ -20,7 +20,7 @@ def test_build_message_spec_from_plain_dict() -> None:
     )
     assert spec.title == "Добро пожаловать!"
     assert len(spec.sections) == 2
-    assert spec.sections[1].rendered_value() == "• Каналы\n• Voice"
+    assert spec.sections[1].rendered_content() == "• Каналы\n• Voice"
 
 
 def test_invalid_spec_raises_validation_error() -> None:
@@ -28,35 +28,113 @@ def test_invalid_spec_raises_validation_error() -> None:
         build_message_spec({"media": {"type": "not-a-real-type", "url": "https://example.com"}})
 
 
-def test_renderer_produces_single_embed_for_small_message() -> None:
+# -- заголовки разного размера (0 = жирным, 1/2/3 = #/##/###) --------------
+
+def test_section_heading_zero_renders_bold_not_markdown_header() -> None:
+    spec = build_message_spec({"sections": [{"title": "Обычный", "content": "текст", "heading": 0}]})
+    assert spec.sections[0].rendered_block() == "**Обычный**\nтекст"
+
+
+@pytest.mark.parametrize("level,prefix", [(1, "# "), (2, "## "), (3, "### ")])
+def test_section_heading_levels_use_markdown_headers(level: int, prefix: str) -> None:
+    spec = build_message_spec({"sections": [{"title": "Заголовок", "content": "текст", "heading": level}]})
+    assert spec.sections[0].rendered_block() == f"{prefix}Заголовок\nтекст"
+
+
+def test_mixed_heading_sizes_appear_in_authored_order() -> None:
+    """Ключевой сценарий запроса: большой/маленький заголовки можно
+    свободно чередовать в одном сообщении, порядок не переставляется."""
+    spec = build_message_spec(
+        {
+            "sections": [
+                {"title": "Большой", "content": "1", "heading": 1},
+                {"title": "Маленький", "content": "2", "heading": 3},
+                {"title": "Снова большой", "content": "3", "heading": 1},
+            ]
+        }
+    )
+    pages = MessageRenderer().render(spec)
+    assert len(pages) == 1
+    description = pages[0][0].description
+    assert description == "# Большой\n1\n\n### Маленький\n2\n\n# Снова большой\n3"
+
+
+# -- цветные врезки-сноски (раздел со своим color -> отдельный embed) ------
+
+def test_section_with_color_becomes_its_own_embed() -> None:
+    spec = build_message_spec(
+        {
+            "description": "Основной текст",
+            "sections": [{"title": "Важно", "content": "врезка", "color": 0xE74C3C}],
+        }
+    )
+    pages = MessageRenderer().render(spec)
+    assert len(pages) == 1
+    embeds = pages[0]
+    assert len(embeds) == 2
+    assert embeds[0].description == "Основной текст"
+    assert embeds[0].color.value == DEFAULT_COLOR
+    assert embeds[1].description == "**Важно**\nврезка"
+    assert embeds[1].color.value == 0xE74C3C
+
+
+def test_callout_between_two_running_sections_splits_into_three_embeds() -> None:
+    spec = build_message_spec(
+        {
+            "sections": [
+                {"title": "До", "content": "текст до"},
+                {"title": "Врезка", "content": "текст врезки", "color": 0x2ECC71},
+                {"title": "После", "content": "текст после"},
+            ]
+        }
+    )
+    pages = MessageRenderer().render(spec)
+    assert len(pages) == 1
+    embeds = pages[0]
+    assert len(embeds) == 3
+    assert "До" in embeds[0].description and "После" not in embeds[0].description
+    assert embeds[1].color.value == 0x2ECC71
+    assert "После" in embeds[2].description
+
+
+# -- базовый рендеринг / пагинация между сообщениями ------------------------
+
+def test_renderer_produces_single_page_for_small_message() -> None:
     spec = build_message_spec({"title": "Hi", "description": "short text"})
-    embeds = MessageRenderer().render(spec)
-    assert len(embeds) == 1
-    assert embeds[0].title == "Hi"
-    assert embeds[0].description == "short text"
+    pages = MessageRenderer().render(spec)
+    assert len(pages) == 1
+    assert len(pages[0]) == 1
+    assert pages[0][0].title == "Hi"
+    assert pages[0][0].description == "short text"
 
 
-def test_renderer_paginates_when_many_sections_exceed_field_cap() -> None:
-    sections = [{"title": f"Section {i}", "content": "text"} for i in range(25)]
+def test_renderer_paginates_across_messages_when_content_too_long() -> None:
+    # Каждый раздел -- отдельный "жирный" блок; суммарно далеко за лимитом
+    # embed'а на одно сообщение (DISCORD_EMBED_TOTAL_LIMIT), поэтому
+    # рендерер обязан уйти на вторую страницу (второе сообщение).
+    long_content = "x" * 3000
+    sections = [{"title": f"Раздел {i}", "content": long_content} for i in range(3)]
     spec = build_message_spec({"title": "Big", "sections": sections})
-    embeds = MessageRenderer().render(spec)
+    pages = MessageRenderer().render(spec)
 
-    assert len(embeds) > 1
-    total_fields = sum(len(e.fields) for e in embeds)
-    assert total_fields == 25
+    assert len(pages) > 1
+    for page in pages:
+        total_chars = sum(len(e.description or "") for e in page)
+        assert total_chars <= DISCORD_EMBED_TOTAL_LIMIT
     # подпись с нумерацией страниц появляется только при реальном разбиении
-    assert "MESSAGE 1/" in embeds[0].footer.text
+    assert "MESSAGE 1/" in pages[0][-1].footer.text
 
 
 def test_author_hidden_on_followup_pages_when_configured() -> None:
-    sections = [{"title": f"Section {i}", "content": "text"} for i in range(25)]
+    long_content = "x" * 3000
+    sections = [{"title": f"Раздел {i}", "content": long_content} for i in range(3)]
     spec = build_message_spec(
         {"author": {"enabled": True, "name": "SkyHub"}, "sections": sections, "show_author_first_message_only": True}
     )
-    embeds = MessageRenderer().render(spec)
-    assert len(embeds) > 1
-    assert embeds[0].author.name == "SkyHub"
-    assert embeds[1].author.name is None
+    pages = MessageRenderer().render(spec)
+    assert len(pages) > 1
+    assert pages[0][0].author.name == "SkyHub"
+    assert pages[1][0].author.name is None
 
 
 def test_split_text_prefers_paragraph_breaks() -> None:

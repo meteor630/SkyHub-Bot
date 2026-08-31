@@ -46,8 +46,8 @@ class WelcomeCog(commands.Cog):
         data = yaml.safe_load(raw) or {}
         spec = build_message_spec(data)
 
-        for embed in self.renderer.render(spec, bot_user=self.ctx.bot.user):
-            await channel.send(embed=embed)
+        for page in self.renderer.render(spec, bot_user=self.ctx.bot.user):
+            await channel.send(embeds=page)
 
 
 class WelcomePlugin(BasePlugin):

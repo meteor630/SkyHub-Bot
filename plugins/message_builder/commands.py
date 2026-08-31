@@ -53,9 +53,8 @@ class AnnounceModal(discord.ui.Modal, title="Новое объявление"):
                 "author": {"enabled": True, "name": interaction.guild.name if interaction.guild else "SkyHub", "avatar": "bot"},
             }
         )
-        embeds = self._renderer.render(spec, bot_user=interaction.client.user)
-        for embed in embeds:
-            await self._channel.send(embed=embed)
+        for page in self._renderer.render(spec, bot_user=interaction.client.user):
+            await self._channel.send(embeds=page)
         await interaction.followup.send("✅ Объявление отправлено.", ephemeral=True)
 
 
@@ -122,8 +121,8 @@ class MessageBuilderCog(commands.Cog):
             return
 
         target = channel or interaction.channel
-        for embed_obj in self.renderer.render(spec, bot_user=interaction.client.user):
-            await target.send(embed=embed_obj)
+        for page in self.renderer.render(spec, bot_user=interaction.client.user):
+            await target.send(embeds=page)
         await interaction.followup.send("✅ Отправлено.", ephemeral=True)
 
     @app_commands.command(name="announce", description="Открыть форму для оформленного объявления")
@@ -155,8 +154,8 @@ class MessageBuilderCog(commands.Cog):
             return
 
         target = channel or interaction.channel
-        for embed_obj in self.renderer.render(spec, bot_user=interaction.client.user):
-            await target.send(embed=embed_obj)
+        for page in self.renderer.render(spec, bot_user=interaction.client.user):
+            await target.send(embeds=page)
         await interaction.followup.send("✅ Отправлено.", ephemeral=True)
 
 
