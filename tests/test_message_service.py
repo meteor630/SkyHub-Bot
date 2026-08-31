@@ -20,7 +20,7 @@ def test_build_message_spec_from_plain_dict() -> None:
     )
     assert spec.title == "Добро пожаловать!"
     assert len(spec.sections) == 2
-    assert spec.sections[1].rendered_content() == "• Каналы\n• Voice"
+    assert spec.sections[1].rendered_content() == "**•** Каналы\n**•** Voice"
 
 
 def test_invalid_spec_raises_validation_error() -> None:
@@ -33,13 +33,14 @@ def test_invalid_spec_raises_validation_error() -> None:
 @pytest.mark.parametrize("marker,symbol", [("bullet", "•"), ("circle", "◦"), ("square", "▪"), ("none", "")])
 def test_marker_choice_for_top_level_items(marker: str, symbol: str) -> None:
     spec = build_message_spec({"sections": [{"content": ["Пункт"], "marker": marker}]})
-    expected = f"{symbol} Пункт" if symbol else "Пункт"
+    expected = f"**{symbol}** Пункт" if symbol else "Пункт"
     assert spec.sections[0].rendered_content() == expected
 
 
 def test_default_markers_match_bullet_top_and_circle_sub() -> None:
     """По умолчанию -- закрашенный кружок сверху, пустой у вложенных
-    (ровно как в примере со скриншота: •, а под ним ○ А. / ○ Б.)."""
+    (ровно как в примере со скриншота: •, а под ним ○ А. / ○ Б.), оба
+    жирным -- маркер не должен теряться на фоне текста."""
     spec = build_message_spec(
         {
             "sections": [
@@ -52,18 +53,20 @@ def test_default_markers_match_bullet_top_and_circle_sub() -> None:
             ]
         }
     )
+    indent = "\xa0\xa0\xa0\xa0"
     lines = spec.sections[0].rendered_content().split("\n")
-    assert lines[0] == "• Обычный пункт"
-    assert lines[1] == "• Пункт со вложенными"
-    assert lines[2] == "    ◦ Подпункт А"
-    assert lines[3] == "    ◦ Подпункт Б"
+    assert lines[0] == "**•** Обычный пункт"
+    assert lines[1] == "**•** Пункт со вложенными"
+    assert lines[2] == indent + "**◦** Подпункт А"
+    assert lines[3] == indent + "**◦** Подпункт Б"
 
 
 def test_sub_marker_can_be_overridden_to_square() -> None:
     spec = build_message_spec(
         {"sections": [{"content": [{"text": "Пункт", "items": ["Вложенный"]}], "sub_marker": "square"}]}
     )
-    assert spec.sections[0].rendered_content() == "• Пункт\n    ▪ Вложенный"
+    indent = "\xa0\xa0\xa0\xa0"
+    assert spec.sections[0].rendered_content() == "**•** Пункт\n" + indent + "**▪** Вложенный"
 
 
 # -- заголовки разного размера (0 = жирным, 1/2/3 = #/##/###) --------------
@@ -81,7 +84,10 @@ def test_section_heading_levels_use_markdown_headers(level: int, prefix: str) ->
 
 def test_mixed_heading_sizes_appear_in_authored_order() -> None:
     """Ключевой сценарий запроса: большой/маленький заголовки можно
-    свободно чередовать в одном сообщении, порядок не переставляется."""
+    свободно чередовать в одном сообщении, порядок не переставляется.
+    Разделы идут подряд без пустой строки между ними -- одна пустая
+    строка в Discord визуально выглядит куда просторнее, чем в обычном
+    тексте, а сам заголовок и так чётко отделяет разделы друг от друга."""
     spec = build_message_spec(
         {
             "sections": [
@@ -94,7 +100,7 @@ def test_mixed_heading_sizes_appear_in_authored_order() -> None:
     pages = MessageRenderer().render(spec)
     assert len(pages) == 1
     description = pages[0][0].description
-    assert description == "# Большой\n1\n\n### Маленький\n2\n\n# Снова большой\n3"
+    assert description == "# Большой\n1\n### Маленький\n2\n# Снова большой\n3"
 
 
 # -- вложенная цитата (сноска ВНУТРИ общей карточки, серая полоска) -------

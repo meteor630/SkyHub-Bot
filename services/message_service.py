@@ -123,8 +123,8 @@ class SectionSpec(BaseModel):
 
         marker = _MARKERS.get(self.marker, "•")
         sub_marker = _MARKERS.get(self.sub_marker, "◦")
-        top_prefix = f"{marker} " if marker else ""
-        sub_prefix = f"{sub_marker} " if sub_marker else ""
+        top_prefix = f"**{marker}** " if marker else ""
+        sub_prefix = f"**{sub_marker}** " if sub_marker else ""
 
         lines: list[str] = []
         for entry in self.content:
@@ -193,7 +193,12 @@ class MessageRenderer:
 
         def flush() -> None:
             if running:
-                blocks.append(("\n\n".join(running), None))
+                # Одна пустая строка ("\n\n") между разделами визуально
+                # смотрится в Discord куда просторнее, чем в обычном
+                # тексте -- поэтому разделы идут подряд без неё; сам
+                # заголовок (жирный или #/##/###) и так чётко отделяет
+                # один раздел от другого.
+                blocks.append(("\n".join(running), None))
                 running.clear()
 
         for section in spec.sections:
