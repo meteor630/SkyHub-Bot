@@ -72,9 +72,17 @@ class SectionSpec(BaseModel):
     # Discord-заголовок #/##/### -- крупный/средний/мелкий, можно
     # свободно чередовать между разделами одного сообщения.
     heading: Literal[0, 1, 2, 3] = 0
-    # Если задан -- раздел рисуется ОТДЕЛЬНЫМ мини-embed'ом со своей
-    # цветной полоской слева (сноска/врезка), а не сливается в общий
-    # текст. Цвет -- как и у всего сообщения, hex-число (напр. 0xE74C3C).
+    # Вложенная цитата (Discord "> текст") -- тонкая полоска ВНУТРИ той
+    # же карточки, что и весь остальной текст (общий цвет один на всё
+    # сообщение). Именно так выглядит сноска на скриншотах у крупных
+    # ботов -- не отдельная карточка, а акцент внутри общей.
+    # Ограничение Discord: у цитаты нет своего цвета, только серый.
+    blockquote: bool = False
+    # Если нужен ИМЕННО свой цвет у сноски -- задайте color (hex, напр.
+    # 0xE74C3C). Раздел тогда рисуется ОТДЕЛЬНЫМ мини-embed'ом со своей
+    # полоской слева, отдельной от основной карточки (это единственный
+    # способ дать сноске нестандартный цвет -- Discord не позволяет
+    # красить что-либо внутри одной карточки в разные цвета).
     color: int | None = None
 
     def rendered_content(self) -> str:
@@ -87,10 +95,17 @@ class SectionSpec(BaseModel):
     def rendered_block(self) -> str:
         content = self.rendered_content()
         if not self.title:
-            return content
-        prefix = _HEADING_MARKDOWN.get(self.heading)
-        heading_line = f"{prefix}{self.title}" if prefix else f"**{self.title}**"
-        return f"{heading_line}\n{content}" if content else heading_line
+            block = content
+        else:
+            prefix = _HEADING_MARKDOWN.get(self.heading)
+            heading_line = f"{prefix}{self.title}" if prefix else f"**{self.title}**"
+            block = f"{heading_line}\n{content}" if content else heading_line
+
+        if self.blockquote and block:
+            # "> " перед каждой строкой -- иначе цитата Discord
+            # обрывается на первом же переносе строки.
+            block = "\n".join(f"> {line}" if line else ">" for line in block.split("\n"))
+        return block
 
 
 class MessageSpec(BaseModel):

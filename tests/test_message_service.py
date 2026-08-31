@@ -59,6 +59,31 @@ def test_mixed_heading_sizes_appear_in_authored_order() -> None:
     assert description == "# Большой\n1\n\n### Маленький\n2\n\n# Снова большой\n3"
 
 
+# -- вложенная цитата (сноска ВНУТРИ общей карточки, серая полоска) -------
+
+def test_blockquote_section_prefixes_every_line() -> None:
+    spec = build_message_spec(
+        {"sections": [{"title": "Заметка", "content": "строка 1\nстрока 2", "blockquote": True}]}
+    )
+    assert spec.sections[0].rendered_block() == "> **Заметка**\n> строка 1\n> строка 2"
+
+
+def test_blockquote_section_stays_in_same_embed_as_main_text() -> None:
+    """В отличие от color, blockquote НЕ создаёт отдельный embed -- полоска
+    остаётся общей на всё сообщение, а не отдельной у сноски."""
+    spec = build_message_spec(
+        {
+            "description": "Основной текст",
+            "sections": [{"title": "Сноска", "content": "детали", "blockquote": True}],
+        }
+    )
+    pages = MessageRenderer().render(spec)
+    assert len(pages) == 1
+    embeds = pages[0]
+    assert len(embeds) == 1  # один embed, не два
+    assert "> **Сноска**\n> детали" in embeds[0].description
+
+
 # -- цветные врезки-сноски (раздел со своим color -> отдельный embed) ------
 
 def test_section_with_color_becomes_its_own_embed() -> None:
