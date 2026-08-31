@@ -100,6 +100,16 @@ class VoiceDeleted(Event):
     owner_id: int | None
 
 
+@dataclass(frozen=True, kw_only=True)
+class VoiceControlPanelChannelChanged(Event):
+    """Публикуется ``server_setup`` при смене канала центральной панели
+    управления голосовыми комнатами (``/setup voice-panel``) -- плагин
+    ``voice_channels`` подписывается и (пере)публикует туда единственное
+    постоянное сообщение с панелью."""
+
+    channel_id: int
+
+
 # --- Жизненный цикл плагинов -----------------------------------------------
 
 @dataclass(frozen=True, kw_only=True)

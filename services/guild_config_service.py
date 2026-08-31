@@ -24,6 +24,7 @@ _CHANNEL_ATTR = {
     "audit_logs": "audit_logs_channel_id",
     "status": "status_channel_id",
     "temporary_voice_creator": "temporary_voice_creator_channel_id",
+    "voice_control_panel": "voice_control_panel_channel_id",
     "radio_voice": "radio_voice_channel_id",
     "radio_text": "radio_text_channel_id",
     "flight_log": "flight_log_channel_id",

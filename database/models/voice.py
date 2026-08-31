@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.models.base import Base, BigIntPK, TimestampMixin
@@ -21,7 +21,11 @@ class TemporaryVoiceChannel(TimestampMixin, BigIntPK, Base):
     guild_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("guilds.id", ondelete="CASCADE"))
     channel_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     owner_id: Mapped[int] = mapped_column(BigInteger)
-    mode: Mapped[str] = mapped_column(String(20), default="public")  # public / private / locked (публичная/скрытая/закрытая)
+    # Два независимых переключателя вместо одного enum-поля "mode" --
+    # "закрыто для входа" и "скрыто из списка каналов" осмысленно
+    # комбинируются независимо друг от друга (напр. видна, но закрыта).
+    is_locked: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     name: Mapped[str] = mapped_column(String(100), default="")
     member_limit: Mapped[int] = mapped_column(default=0)
 

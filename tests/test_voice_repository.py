@@ -34,7 +34,8 @@ async def test_create_room_persists_and_records_owner(session) -> None:
     repo = VoiceRepository(session)
     room = await repo.create(guild_id=GUILD_ID, channel_id=CHANNEL_ID, owner_id=OWNER_ID, name="Test Room")
 
-    assert room.mode == "public"
+    assert room.is_locked is False
+    assert room.is_hidden is False
     fetched = await repo.get_by_channel_id(CHANNEL_ID)
     assert fetched is not None
     assert fetched.owner_id == OWNER_ID
@@ -54,16 +55,46 @@ async def test_create_room_with_member_limit_preset(session) -> None:
     assert fetched.member_limit == 2
 
 
-async def test_set_mode_and_rename(session) -> None:
+async def test_set_locked_and_hidden_independently(session) -> None:
+    """is_locked (закрыто для входа) и is_hidden (скрыто из списка) --
+    два независимых переключателя, а не один enum "mode"."""
     repo = VoiceRepository(session)
     await repo.create(guild_id=GUILD_ID, channel_id=CHANNEL_ID, owner_id=OWNER_ID, name="Test Room")
 
-    await repo.set_mode(CHANNEL_ID, "locked")
+    await repo.set_locked(CHANNEL_ID, True)
+    fetched = await repo.get_by_channel_id(CHANNEL_ID)
+    assert fetched.is_locked is True
+    assert fetched.is_hidden is False
+
+    await repo.set_hidden(CHANNEL_ID, True)
+    fetched = await repo.get_by_channel_id(CHANNEL_ID)
+    assert fetched.is_locked is True  # закрытие для входа не трогает видимость
+    assert fetched.is_hidden is True
+
+    await repo.set_locked(CHANNEL_ID, False)
+    fetched = await repo.get_by_channel_id(CHANNEL_ID)
+    assert fetched.is_locked is False
+    assert fetched.is_hidden is True  # и наоборот
+
+
+async def test_rename(session) -> None:
+    repo = VoiceRepository(session)
+    await repo.create(guild_id=GUILD_ID, channel_id=CHANNEL_ID, owner_id=OWNER_ID, name="Test Room")
+
     await repo.rename(CHANNEL_ID, "New Name")
 
     fetched = await repo.get_by_channel_id(CHANNEL_ID)
-    assert fetched.mode == "locked"
     assert fetched.name == "New Name"
+
+
+async def test_all_for_owner_sorted_newest_first(session) -> None:
+    repo = VoiceRepository(session)
+    await repo.create(guild_id=GUILD_ID, channel_id=CHANNEL_ID, owner_id=OWNER_ID, name="First")
+    await repo.create(guild_id=GUILD_ID, channel_id=CHANNEL_ID + 1, owner_id=OWNER_ID, name="Second")
+    await repo.create(guild_id=GUILD_ID, channel_id=CHANNEL_ID + 2, owner_id=NEW_OWNER_ID, name="Someone else's")
+
+    rooms = await repo.all_for_owner(GUILD_ID, OWNER_ID)
+    assert [r.channel_id for r in rooms] == [CHANNEL_ID + 1, CHANNEL_ID]
 
 
 async def test_transfer_owner_closes_old_ownership_record(session) -> None:

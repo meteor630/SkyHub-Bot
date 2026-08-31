@@ -42,6 +42,11 @@ class GuildSettings(Base):
     # temporary_voice_creator_channel_id (без лимита). См. plugins/voice_channels.
     voice_creator_presets: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
 
+    # Канал с единственным постоянным сообщением-панелью для управления
+    # СВОЕЙ голосовой комнатой откуда угодно, не только из чата самой
+    # комнаты. См. /setup voice-panel, plugins/voice_channels.
+    voice_control_panel_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
     radio_voice_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     radio_text_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 

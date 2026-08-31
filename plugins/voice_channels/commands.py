@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.exceptions import VoiceChannelError
-from services.voice_service import MODE_LOCKED, MODE_PRIVATE, MODE_PUBLIC, VoiceService
+from services.voice_service import VoiceService
 
 
 class VoiceCog(commands.Cog):
@@ -50,8 +50,8 @@ class VoiceCog(commands.Cog):
             return
 
         record = await self.service.get_room(channel.id)
-        mode_labels = {MODE_PUBLIC: "🔓 Открыта", MODE_PRIVATE: "🙈 Скрыта", MODE_LOCKED: "🔒 Закрыта"}
-        mode_label = mode_labels.get(record.mode, record.mode) if record else "—"
+        locked_label = "🔒 Закрыта для входа" if record and record.is_locked else "🔓 Открыта для входа"
+        hidden_label = "🙈 Скрыта из списка" if record and record.is_hidden else "👁 Видна в списке"
         limit_label = str(record.member_limit) if record and record.member_limit else "без лимита"
 
         allowed, denied = [], []
@@ -64,10 +64,14 @@ class VoiceCog(commands.Cog):
                 denied.append(target.mention if hasattr(target, "mention") else str(target))
 
         embed = discord.Embed(title=f"ℹ️ {channel.name}", color=discord.Color.blue())
-        embed.add_field(name="Режим", value=mode_label, inline=True)
+        embed.add_field(name="Вход", value=locked_label, inline=True)
+        embed.add_field(name="Видимость", value=hidden_label, inline=True)
         embed.add_field(name="Лимит участников", value=limit_label, inline=True)
         embed.add_field(name="Сейчас в комнате", value=str(len(channel.members)), inline=True)
-        embed.add_field(name="Разрешён вход (/voice allow)", value=", ".join(allowed) or "—", inline=False)
+        embed.add_field(
+            name="Индивидуально разрешён вход", value=", ".join(allowed) or "—", inline=False,
+        )
+        embed.set_footer(text="Сюда попадают и те, кому разрешили при закрытии комнаты, и /voice allow")
         embed.add_field(name="Запрещён вход (/voice deny/ban)", value=", ".join(denied) or "—", inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -87,37 +91,39 @@ class VoiceCog(commands.Cog):
         await self.service.set_limit(channel, limit)
         await interaction.followup.send(f"👥 Лимит участников: **{limit or '∞'}**", ephemeral=True)
 
-    @voice_group.command(name="lock", description="Закрыть комнату (никто новый не сможет зайти)")
+    @voice_group.command(name="lock", description="Закрыть комнату для входа (кто уже внутри -- может заходить свободно)")
     async def lock(self, interaction: discord.Interaction) -> None:
         channel = await self._owned_channel_or_error(interaction)
         if channel is None:
             return
-        await self.service.set_mode(channel, MODE_LOCKED)
-        await interaction.followup.send("🔒 Комната закрыта.", ephemeral=True)
+        await self.service.close_room(channel)
+        await interaction.followup.send(
+            "🔒 Комната закрыта для входа -- те, кто уже внутри, могут заходить обратно свободно.", ephemeral=True
+        )
 
-    @voice_group.command(name="unlock", description="Открыть комнату")
+    @voice_group.command(name="unlock", description="Снова открыть комнату для входа всем")
     async def unlock(self, interaction: discord.Interaction) -> None:
         channel = await self._owned_channel_or_error(interaction)
         if channel is None:
             return
-        await self.service.set_mode(channel, MODE_PUBLIC)
-        await interaction.followup.send("🔓 Комната открыта.", ephemeral=True)
+        await self.service.open_room(channel)
+        await interaction.followup.send("🔓 Комната открыта для входа всем.", ephemeral=True)
 
     @voice_group.command(name="hide", description="Скрыть комнату из списка каналов")
     async def hide(self, interaction: discord.Interaction) -> None:
         channel = await self._owned_channel_or_error(interaction)
         if channel is None:
             return
-        await self.service.set_mode(channel, MODE_PRIVATE)
-        await interaction.followup.send("🙈 Комната скрыта.", ephemeral=True)
+        await self.service.hide_room(channel)
+        await interaction.followup.send("🙈 Комната скрыта из списка каналов.", ephemeral=True)
 
-    @voice_group.command(name="show", description="Сделать комнату видимой (но не обязательно доступной)")
+    @voice_group.command(name="show", description="Сделать комнату видимой в списке каналов")
     async def show(self, interaction: discord.Interaction) -> None:
         channel = await self._owned_channel_or_error(interaction)
         if channel is None:
             return
-        await self.service.set_mode(channel, MODE_PUBLIC)
-        await interaction.followup.send("👁 Комната видна.", ephemeral=True)
+        await self.service.show_room(channel)
+        await interaction.followup.send("👁 Комната видна в списке каналов.", ephemeral=True)
 
     @voice_group.command(name="kick", description="Выгнать пользователя из комнаты")
     async def kick(self, interaction: discord.Interaction, member: discord.Member) -> None:

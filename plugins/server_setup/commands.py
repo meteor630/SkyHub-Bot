@@ -56,6 +56,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core.events import VoiceControlPanelChannelChanged
 from core.permissions import Role, require
 from database.repositories.guild_repository import GuildRepository
 
@@ -74,6 +75,7 @@ CHANNEL_SETTINGS: dict[str, tuple[str, type[discord.abc.GuildChannel], str]] = {
     "temp-voice-creator": ("temporary_voice_creator_channel_id", discord.VoiceChannel, "Создание временного voice"),
     "temp-voice-category": ("temporary_voice_category_id", discord.CategoryChannel, "Категория временных voice"),
     "tickets-category": ("tickets_category_id", discord.CategoryChannel, "Категория тикетов"),
+    "voice-panel": ("voice_control_panel_channel_id", discord.TextChannel, "Центральная панель voice"),
 }
 
 # key -> (атрибут GuildSettings, подпись для сообщений) -- роли модерации.
@@ -396,6 +398,37 @@ class FlightsSetupView(discord.ui.View):
         return callback
 
 
+class VoicePanelSetupView(discord.ui.View):
+    def __init__(self, ctx, guild: discord.Guild) -> None:
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        select = ManualChannelSelect(
+            guild=guild, channel_types=(discord.ChannelType.text,), placeholder="Канал: центральная панель voice"
+        )
+        select.callback = self._callback(select)
+        self.add_item(select)
+
+    def _callback(self, select: discord.ui.Select):
+        async def callback(interaction: discord.Interaction) -> None:
+            channel = await _resolve_selected_channel(interaction, select)
+            if channel is None:
+                return
+            async with self.ctx.db.session() as session:
+                repo = GuildRepository(session)
+                await repo.get_or_create(interaction.guild_id, interaction.guild.name)
+                await repo.update_settings(interaction.guild_id, voice_control_panel_channel_id=channel.id)
+            self.ctx.guild_config().invalidate(interaction.guild_id)
+            # voice_channels -- отдельный плагин, поэтому не вызываем его
+            # напрямую (архитектурное правило: плагины не импортируют друг
+            # друга) -- публикуем событие, он сам (пере)разместит панель.
+            self.ctx.emit(VoiceControlPanelChannelChanged(guild_id=interaction.guild_id, channel_id=channel.id))
+            await interaction.response.send_message(
+                f"✅ Центральная панель управления voice-комнатами -> {channel.mention}", ephemeral=True
+            )
+
+        return callback
+
+
 class TicketsSetupView(discord.ui.View):
     def __init__(self, ctx, guild: discord.Guild) -> None:
         super().__init__(timeout=180)
@@ -507,6 +540,15 @@ class ServerSetupCog(commands.Cog):
             "Настройте приветственный канал, обычный (без лимита) и быстрые (на 2/на 4 места) "
             "создатели временных голосовых комнат:",
             view=MiscChannelsSetupView(self.ctx, interaction.guild), ephemeral=True,
+        )
+
+    @setup_group.command(name="voice-panel", description="Канал с центральной панелью управления голосовыми комнатами")
+    @require(Role.ADMIN)
+    async def voice_panel(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message(
+            "Выберите текстовый канал для единственной постоянной панели -- в нём владельцы смогут "
+            "управлять своей активной голосовой комнатой, даже если сейчас в неё не зашли:",
+            view=VoicePanelSetupView(self.ctx, interaction.guild), ephemeral=True,
         )
 
     @setup_group.command(name="roles", description="Настроить роли модерации")
@@ -661,6 +703,8 @@ class ServerSetupCog(commands.Cog):
             await repo.get_or_create(interaction.guild_id, interaction.guild.name)
             await repo.update_settings(interaction.guild_id, **{attr: channel.id})
         self.ctx.guild_config().invalidate(interaction.guild_id)
+        if attr == "voice_control_panel_channel_id":
+            self.ctx.emit(VoiceControlPanelChannelChanged(guild_id=interaction.guild_id, channel_id=channel.id))
         await interaction.followup.send(f"✅ {label} -> {channel.mention}", ephemeral=True)
 
     @setup_group.command(name="show", description="Показать текущую конфигурацию сервера")
@@ -687,6 +731,7 @@ class ServerSetupCog(commands.Cog):
         embed.add_field(name="Приветствие", value=fmt_channel(settings.welcome_channel_id))
         embed.add_field(name="Создание voice", value=fmt_channel(settings.temporary_voice_creator_channel_id))
         embed.add_field(name="Категория voice", value=fmt_channel(settings.temporary_voice_category_id))
+        embed.add_field(name="Центральная панель voice", value=fmt_channel(settings.voice_control_panel_channel_id))
         if settings.voice_creator_presets:
             presets = ", ".join(f"{fmt_channel(int(cid))} (на {limit})" for cid, limit in settings.voice_creator_presets.items())
         else:

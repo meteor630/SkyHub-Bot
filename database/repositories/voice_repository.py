@@ -11,10 +11,10 @@ from database.repositories.base import BaseRepository
 
 class VoiceRepository(BaseRepository[TemporaryVoiceChannel]):
     async def create(
-        self, *, guild_id: int, channel_id: int, owner_id: int, name: str, mode: str = "public", member_limit: int = 0
+        self, *, guild_id: int, channel_id: int, owner_id: int, name: str, member_limit: int = 0
     ) -> TemporaryVoiceChannel:
         record = TemporaryVoiceChannel(
-            guild_id=guild_id, channel_id=channel_id, owner_id=owner_id, name=name, mode=mode, member_limit=member_limit
+            guild_id=guild_id, channel_id=channel_id, owner_id=owner_id, name=name, member_limit=member_limit
         )
         self.session.add(record)
         await self.session.flush()
@@ -41,10 +41,32 @@ class VoiceRepository(BaseRepository[TemporaryVoiceChannel]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def set_mode(self, channel_id: int, mode: str) -> None:
+    async def all_for_owner(self, guild_id: int, owner_id: int) -> list[TemporaryVoiceChannel]:
+        """Активные комнаты, которыми сейчас владеет участник -- для
+        центральной панели управления (``/setup voice-panel``), которая
+        работает не из чата конкретной комнаты, а сама находит, чем
+        управлять."""
+        # Сортировка по id, а не created_at -- несколько комнат, созданных
+        # в быстрой последовательности (как в тестах, да и не только),
+        # вполне могут получить одинаковый created_at (в Postgres --
+        # если оказались в одной транзакции; func.now() фиксирован на
+        # уровне транзакции, а не вызова). id всегда монотонно растёт.
+        stmt = select(TemporaryVoiceChannel).where(
+            TemporaryVoiceChannel.guild_id == guild_id, TemporaryVoiceChannel.owner_id == owner_id
+        ).order_by(TemporaryVoiceChannel.id.desc())
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def set_locked(self, channel_id: int, locked: bool) -> None:
         record = await self.get_by_channel_id(channel_id)
         if record is not None:
-            record.mode = mode
+            record.is_locked = locked
+            await self.session.flush()
+
+    async def set_hidden(self, channel_id: int, hidden: bool) -> None:
+        record = await self.get_by_channel_id(channel_id)
+        if record is not None:
+            record.is_hidden = hidden
             await self.session.flush()
 
     async def rename(self, channel_id: int, name: str) -> None:

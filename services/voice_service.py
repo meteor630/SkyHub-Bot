@@ -15,10 +15,6 @@ from database.repositories.voice_repository import VoiceRepository
 
 logger = logging.getLogger("skyhub.voice")
 
-MODE_PUBLIC = "public"
-MODE_PRIVATE = "private"
-MODE_LOCKED = "locked"
-
 
 class VoiceService:
     def __init__(self, db: Database) -> None:
@@ -31,7 +27,7 @@ class VoiceService:
         *,
         member: discord.Member,
         category: discord.CategoryChannel | None,
-        name_template: str = "✈️ Комната {name}",
+        name_template: str = "{name}",
         user_limit: int = 0,
     ) -> discord.VoiceChannel:
         guild = member.guild
@@ -90,25 +86,67 @@ class VoiceService:
             return record.owner_id if record else None
 
     async def get_room(self, channel_id: int):
-        """Запись о комнате (режим, лимит, владелец) -- для ``/voice info``."""
+        """Запись о комнате (закрыта/скрыта, лимит, владелец) -- для ``/voice info``."""
         async with self.db.session() as session:
             repo = VoiceRepository(session)
             return await repo.get_by_channel_id(channel_id)
 
-    async def set_mode(self, channel: discord.VoiceChannel, mode: str) -> None:
-        default_role = channel.guild.default_role
-        if mode == MODE_PUBLIC:
-            await channel.set_permissions(default_role, connect=True, view_channel=True)
-        elif mode == MODE_PRIVATE:
-            await channel.set_permissions(default_role, connect=False, view_channel=True)
-        elif mode == MODE_LOCKED:
-            await channel.set_permissions(default_role, connect=False, view_channel=False)
-        else:
-            raise ValueError(f"неизвестный режим голосового канала: {mode}")
-
+    async def get_rooms_for_owner(self, guild_id: int, owner_id: int):
+        """Активные комнаты участника -- для центральной панели управления,
+        которая работает не из чата конкретной комнаты (``/setup voice-panel``)."""
         async with self.db.session() as session:
             repo = VoiceRepository(session)
-            await repo.set_mode(channel.id, mode)
+            return await repo.all_for_owner(guild_id, owner_id)
+
+    async def close_room(self, channel: discord.VoiceChannel) -> None:
+        """Закрывает комнату для новых участников, но НЕ выгоняет и не
+        мешает вернуться тем, кто уже внутри -- каждому из них выдаётся
+        персональное разрешение на вход поверх общего запрета для
+        @everyone. Видимость комнаты (`is_hidden`) не трогается."""
+        default_role = channel.guild.default_role
+        overwrite = channel.overwrites_for(default_role)
+        overwrite.connect = False
+        await channel.set_permissions(default_role, overwrite=overwrite)
+
+        for existing_member in channel.members:
+            member_overwrite = channel.overwrites_for(existing_member)
+            member_overwrite.connect = True
+            await channel.set_permissions(existing_member, overwrite=member_overwrite)
+
+        async with self.db.session() as session:
+            await VoiceRepository(session).set_locked(channel.id, True)
+
+    async def open_room(self, channel: discord.VoiceChannel) -> None:
+        """Снова разрешает вход всем -- персональные разрешения, выданные
+        при закрытии (см. :meth:`close_room`), не отзываются: они просто
+        становятся избыточными, раз @everyone и так может зайти."""
+        default_role = channel.guild.default_role
+        overwrite = channel.overwrites_for(default_role)
+        overwrite.connect = True
+        await channel.set_permissions(default_role, overwrite=overwrite)
+
+        async with self.db.session() as session:
+            await VoiceRepository(session).set_locked(channel.id, False)
+
+    async def hide_room(self, channel: discord.VoiceChannel) -> None:
+        """Прячет комнату из списка каналов. Независимо от того, закрыта
+        ли она для входа -- это отдельный переключатель."""
+        default_role = channel.guild.default_role
+        overwrite = channel.overwrites_for(default_role)
+        overwrite.view_channel = False
+        await channel.set_permissions(default_role, overwrite=overwrite)
+
+        async with self.db.session() as session:
+            await VoiceRepository(session).set_hidden(channel.id, True)
+
+    async def show_room(self, channel: discord.VoiceChannel) -> None:
+        default_role = channel.guild.default_role
+        overwrite = channel.overwrites_for(default_role)
+        overwrite.view_channel = True
+        await channel.set_permissions(default_role, overwrite=overwrite)
+
+        async with self.db.session() as session:
+            await VoiceRepository(session).set_hidden(channel.id, False)
 
     async def rename(self, channel: discord.VoiceChannel, name: str) -> None:
         await channel.edit(name=name[:100])

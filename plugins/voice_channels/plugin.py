@@ -1,31 +1,30 @@
 """Плагин ``voice_channels``: временные приватные голосовые комнаты (ТЗ §15-18, §27)."""
 from __future__ import annotations
 
-import asyncio
 import time
 
 import discord
 from discord.ext import commands
 
 from core.base_plugin import BasePlugin, PluginMeta
-from core.events import VoiceCreated, VoiceDeleted
+from core.events import VoiceControlPanelChannelChanged, VoiceCreated, VoiceDeleted
+from database.repositories.dashboard_repository import DashboardRepository
 from plugins.voice_channels.commands import build_voice_cog
-from plugins.voice_channels.views import VoiceControlView
+from plugins.voice_channels.views import CentralVoicePanelView, VoiceControlView
 from services.voice_service import VoiceService
-
-EMPTY_CHANNEL_DELETE_DELAY_SECONDS = 10.0
 
 # Защита от спама созданием комнат -- быстрый выход-заход в канал-создатель
 # иначе плодил бы новую комнату на каждый вход (ТЗ §37, найдено при аудите
 # безопасности).
 ROOM_CREATE_COOLDOWN_SECONDS = 15.0
 
+PANEL_DASHBOARD_KIND = "voice_control_panel"
+
 
 class VoiceEventsCog(commands.Cog):
     def __init__(self, ctx, service: VoiceService) -> None:
         self.ctx = ctx
         self.service = service
-        self._pending_deletions: dict[int, asyncio.Task] = {}
         self._last_created_at: dict[int, float] = {}  # user_id -> monotonic-время последнего создания
 
     @commands.Cog.listener()
@@ -39,7 +38,7 @@ class VoiceEventsCog(commands.Cog):
                     await self._create_room_for(member, user_limit=user_limit)
 
             if before.channel is not None:
-                await self._maybe_schedule_deletion(before.channel)
+                await self._delete_if_empty(before.channel)
         except Exception as exc:  # noqa: BLE001
             await self.ctx.report_error(exc, event="on_voice_state_update", guild_id=member.guild.id, user_id=member.id)
 
@@ -62,7 +61,7 @@ class VoiceEventsCog(commands.Cog):
         presets = await self.ctx.guild_config().voice_creator_presets(guild_id)
         return presets.get(channel_id)
 
-    def _capabilities_embed(self, channel: discord.VoiceChannel, user_limit: int) -> discord.Embed:
+    async def _capabilities_embed(self, guild_id: int, channel: discord.VoiceChannel, user_limit: int) -> discord.Embed:
         limit_note = (
             f"Лимит участников уже выставлен на **{user_limit}** (быстрый создатель) -- "
             "изменить его можно `/voice limit` или в настройках канала."
@@ -77,7 +76,7 @@ class VoiceEventsCog(commands.Cog):
         embed.add_field(
             name="Кнопками ниже или командой /voice",
             value=(
-                "🔒/🔓 закрыть/открыть -- `/voice lock` / `/voice unlock`\n"
+                "🔒/🔓 закрыть/открыть для входа -- `/voice lock` / `/voice unlock`\n"
                 "🙈/👁 скрыть/показать из списка каналов -- `/voice hide` / `/voice show`\n"
                 "✏️ переименовать -- `/voice name <название>`\n"
                 "👥 список участников -- кнопка «Пользователи»\n"
@@ -96,6 +95,8 @@ class VoiceEventsCog(commands.Cog):
             ),
             inline=False,
         )
+        panel_channel_id = await self.ctx.guild_config().resolve_channel_id(guild_id, "voice_control_panel")
+        panel_note = f" -- то же самое доступно и из <#{panel_channel_id}>, даже когда вы не в голосовом канале." if panel_channel_id else ""
         embed.add_field(
             name="Прямо в настройках канала Discord",
             value=(
@@ -103,7 +104,7 @@ class VoiceEventsCog(commands.Cog):
                 "участников, а также отключать людей от разговора -- без команд бота. Вкладку "
                 "«Разрешения» и заглушение микрофона мы туда намеренно не выдаём: заглушение в Discord "
                 "привязано к участнику на весь сервер и осталось бы с ним даже после выхода из этой "
-                "комнаты -- для похожей задачи используйте `/voice ban`, она безопасна."
+                f"комнаты -- для похожей задачи используйте `/voice ban`, она безопасна.{panel_note}"
             ),
             inline=False,
         )
@@ -122,7 +123,7 @@ class VoiceEventsCog(commands.Cog):
         self.ctx.emit(VoiceCreated(guild_id=member.guild.id, channel_id=channel.id, owner_id=member.id))
 
         view = VoiceControlView(self.service)
-        embed = self._capabilities_embed(channel, user_limit)
+        embed = await self._capabilities_embed(member.guild.id, channel, user_limit)
         try:
             # silent=True -- пинг остаётся кликабельным упоминанием, но не
             # шлёт push-уведомление тому, кто и так только что сюда зашёл.
@@ -130,39 +131,21 @@ class VoiceEventsCog(commands.Cog):
         except discord.HTTPException as exc:
             await self.ctx.report_error(exc, event="post_voice_control_panel", guild_id=member.guild.id)
 
-    async def _maybe_schedule_deletion(self, channel: discord.VoiceChannel) -> None:
-        record = await self.service.get_owner_id(channel.id)
-        if record is None:
+    async def _delete_if_empty(self, channel: discord.VoiceChannel) -> None:
+        """Удаляет опустевшую временную комнату немедленно, без паузы."""
+        owner_id = await self.service.get_owner_id(channel.id)
+        if owner_id is None:
             return  # это не отслеживаемый временный канал
         if len(channel.members) > 0:
             return
-
-        existing = self._pending_deletions.get(channel.id)
-        if existing is not None and not existing.done():
-            return
-
-        task = self.ctx.create_task(self._delete_after_delay(channel.id), name=f"voice-cleanup-{channel.id}")
-        self._pending_deletions[channel.id] = task
-
-    async def _delete_after_delay(self, channel_id: int) -> None:
-        await asyncio.sleep(EMPTY_CHANNEL_DELETE_DELAY_SECONDS)
-        self._pending_deletions.pop(channel_id, None)
-
-        channel = self.ctx.bot.get_channel(channel_id)
-        if channel is None or not isinstance(channel, discord.VoiceChannel):
-            return
-        if len(channel.members) > 0:
-            return  # кто-то зашёл обратно за время задержки
-
-        owner_id = await self.service.get_owner_id(channel_id)
         await self.service.delete_room(channel)
-        self.ctx.emit(VoiceDeleted(guild_id=channel.guild.id, channel_id=channel_id, owner_id=owner_id))
+        self.ctx.emit(VoiceDeleted(guild_id=channel.guild.id, channel_id=channel.id, owner_id=owner_id))
 
 
 class VoiceChannelsPlugin(BasePlugin):
     meta = PluginMeta(
-        name="voice_channels", version="1.4.0",
-        description="Временные приватные голосовые комнаты с управлением владельцем (кнопки + /voice)",
+        name="voice_channels", version="1.5.0",
+        description="Временные приватные голосовые комнаты с управлением владельцем (кнопки + /voice + центральная панель)",
         dependencies=(),
     )
 
@@ -170,9 +153,17 @@ class VoiceChannelsPlugin(BasePlugin):
         self.service = VoiceService(self.ctx.db)
         await self.ctx.add_cog(build_voice_cog(self.ctx, self.service))
         await self.ctx.add_cog(VoiceEventsCog(self.ctx, self.service))
+        # Персистентная центральная панель -- custom_id не завязаны на
+        # конкретную комнату (см. docstring views.py), поэтому один
+        # зарегистрированный экземпляр обслуживает всех владельцев сразу.
+        self.ctx.bot.add_view(CentralVoicePanelView(self.service))
+        self.ctx.subscribe(VoiceControlPanelChannelChanged, self._on_panel_channel_changed)
         self.log.info("voice_channels готов к работе")
 
     async def start(self) -> None:
+        if not self.ctx.bot.guilds:
+            return  # см. tests/test_plugin_manager_smoke.py -- на нуле серверов БД может быть недоступна
+
         for guild in self.ctx.bot.guilds:
             try:
                 removed, checked = await self.service.reconcile_guild(guild)
@@ -180,6 +171,65 @@ class VoiceChannelsPlugin(BasePlugin):
                     self.log.info("Проверка временных voice-каналов на сервере %s: удалено %d/%d", guild.name, removed, checked)
             except Exception as exc:  # noqa: BLE001
                 await self.ctx.report_error(exc, event="reconcile_guild", guild_id=guild.id)
+
+            try:
+                await self._ensure_panel(guild)
+            except Exception as exc:  # noqa: BLE001
+                await self.ctx.report_error(exc, event="voice_panel_ensure", guild_id=guild.id)
+
+    async def _on_panel_channel_changed(self, event: VoiceControlPanelChannelChanged) -> None:
+        if event.guild_id is None:
+            return
+        guild = self.ctx.bot.get_guild(event.guild_id)
+        if guild is not None:
+            await self._ensure_panel(guild)
+
+    async def _ensure_panel(self, guild: discord.Guild) -> None:
+        """Гарантирует ровно одно постоянное сообщение с центральной
+        панелью в настроенном канале -- как status_dashboard/radio, не
+        плодит новые сообщения, если старое ещё живо, и само пересоздаёт
+        его, если кто-то удалил вручную."""
+        channel_id = await self.ctx.guild_config().resolve_channel_id(guild.id, "voice_control_panel")
+        if not channel_id:
+            return
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            return
+
+        async with self.ctx.db.session() as session:
+            existing = await DashboardRepository(session).get(guild.id, PANEL_DASHBOARD_KIND)
+
+        embed = discord.Embed(
+            title="🎛 Управление вашей голосовой комнатой",
+            description=(
+                "Кнопки ниже применяются к вашей текущей активной временной голосовой комнате, "
+                "даже если вы сейчас не в голосовом канале. Если у вас нет активной комнаты -- "
+                "сначала создайте её, зайдя в канал-создатель."
+            ),
+            color=discord.Color.blue(),
+        )
+
+        message = None
+        if existing is not None and existing.channel_id == channel_id:
+            try:
+                message = await channel.fetch_message(existing.message_id)
+                await message.edit(embed=embed, view=CentralVoicePanelView(self.service))
+            except discord.NotFound:
+                message = None
+            except discord.HTTPException as exc:
+                await self.ctx.report_error(exc, event="voice_panel_edit", guild_id=guild.id)
+                return
+
+        if message is None:
+            try:
+                message = await channel.send(embed=embed, view=CentralVoicePanelView(self.service))
+            except discord.HTTPException as exc:
+                await self.ctx.report_error(exc, event="voice_panel_create", guild_id=guild.id)
+                return
+            async with self.ctx.db.session() as session:
+                await DashboardRepository(session).upsert(
+                    guild_id=guild.id, kind=PANEL_DASHBOARD_KIND, channel_id=channel_id, message_id=message.id
+                )
 
 
 PLUGIN_CLASS = VoiceChannelsPlugin
