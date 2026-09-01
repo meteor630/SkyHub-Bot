@@ -124,6 +124,13 @@ class SectionSpec(BaseModel):
     # способ дать сноске нестандартный цвет -- Discord не позволяет
     # красить что-либо внутри одной карточки в разные цвета).
     color: int | None = None
+    # Начать с ЭТОГО раздела новую карточку (embed) в том же сообщении,
+    # без смены цвета -- просто чтобы разбить один огромный embed на
+    # несколько визуально отдельных блоков подряд (как у крупных ботов:
+    # несколько карточек друг под другом одним сообщением). В отличие от
+    # color, цвет остаётся общий (или свой, если задать color вместе с
+    # new_card) -- только сам факт "новая карточка" включается отдельно.
+    new_card: bool = False
 
     def rendered_content(self) -> str:
         if self.content is None:
@@ -195,8 +202,10 @@ class MessageRenderer:
 
     def _build_blocks(self, spec: MessageSpec) -> list[tuple[str, int | None]]:
         """Собирает список ``(текст, цвет_или_None)`` -- обычные разделы
-        подряд склеиваются в один блок (``color=None``), раздел со своим
-        ``color`` образует отдельный блок, чтобы стать своим embed'ом.
+        подряд склеиваются в один блок (``color=None``), а раздел со
+        своим ``color`` ИЛИ с ``new_card=True`` образует отдельный блок,
+        чтобы стать своим (следующим по счёту) embed'ом -- несколько
+        карточек подряд одним сообщением вместо одной длинной "простыни".
 
         Отступ перед разделом ставится не всегда одинаково: настоящий
         Discord-заголовок (``heading`` 1/2/3, `#`/`##`/`###`) сам рисует
@@ -226,10 +235,18 @@ class MessageRenderer:
 
         for section in spec.sections:
             if section.color is not None:
+                # Свой цвет -- ВСЕГДА отдельная карточка (иначе Discord
+                # не даёт покрасить кусок текста в другой цвет внутри
+                # одной карточки).
                 flush()
                 blocks.append((section.rendered_block(), section.color))
-            else:
-                append_running(section.rendered_block(), has_own_top_margin=section.heading in (1, 2, 3))
+                continue
+            if section.new_card:
+                # Явно попросили новую карточку без смены цвета -- просто
+                # разбивка длинного embed'а, дальше текст снова копится
+                # в НОВЫЙ running-блок общего (или дефолтного) цвета.
+                flush()
+            append_running(section.rendered_block(), has_own_top_margin=section.heading in (1, 2, 3))
         flush()
         return blocks
 

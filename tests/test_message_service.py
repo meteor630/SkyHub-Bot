@@ -176,6 +176,39 @@ def test_section_with_color_becomes_its_own_embed() -> None:
     assert embeds[1].color.value == 0xE74C3C
 
 
+def test_new_card_splits_without_color_but_keeps_shared_default_color() -> None:
+    """new_card -- та же "новая карточка", что и у color, но БЕЗ смены
+    цвета: обе карточки красятся общим цветом сообщения (DEFAULT_COLOR),
+    просто текст физически разбит на два embed'а подряд, чтобы одно
+    сообщение не выглядело гигантской "простынёй"."""
+    spec = build_message_spec(
+        {
+            "sections": [
+                {"title": "Первая часть", "content": "текст 1"},
+                {"title": "Вторая часть", "content": "текст 2", "new_card": True},
+            ]
+        }
+    )
+    pages = MessageRenderer().render(spec)
+    assert len(pages) == 1
+    embeds = pages[0]
+    assert len(embeds) == 2
+    assert "Первая часть" in embeds[0].description and "Вторая часть" not in embeds[0].description
+    assert "Вторая часть" in embeds[1].description
+    assert embeds[0].color.value == DEFAULT_COLOR
+    assert embeds[1].color.value == DEFAULT_COLOR
+
+
+def test_new_card_can_combine_with_own_color() -> None:
+    spec = build_message_spec(
+        {"sections": [{"content": "1"}, {"content": "2", "new_card": True, "color": 0xE74C3C}]}
+    )
+    pages = MessageRenderer().render(spec)
+    embeds = pages[0]
+    assert len(embeds) == 2
+    assert embeds[1].color.value == 0xE74C3C
+
+
 def test_callout_between_two_running_sections_splits_into_three_embeds() -> None:
     spec = build_message_spec(
         {
