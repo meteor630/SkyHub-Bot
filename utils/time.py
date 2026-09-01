@@ -12,13 +12,15 @@ def utcnow() -> dt.datetime:
 def format_latency_ms(latency_seconds: float) -> str:
     """Форматирует задержку до шлюза Discord в миллисекундах.
 
-    ``discord.Client.latency`` возвращает ``float('nan')``, пока бот ещё
-    не получил ни одного ответа на heartbeat (самые первые мгновения
-    после подключения) -- без этой проверки ``/status`` и консольная
-    команда ``status``, вызванные в этот момент, падали с
-    ``ValueError: cannot convert float NaN to integer``.
+    ``discord.Client.latency`` может быть не только ``float('nan')``, пока
+    бот ещё не получил ни одного ответа на heartbeat (самые первые
+    мгновения после подключения), но и ``float('inf')`` -- например,
+    пока веб-сокет ещё не установлен/переподключается. ``round()`` от
+    обоих валится с разными исключениями (``ValueError`` для NaN,
+    ``OverflowError`` для inf), поэтому проверяем оба случая разом через
+    ``math.isfinite``.
     """
-    if math.isnan(latency_seconds):
+    if not math.isfinite(latency_seconds):
         return "н/д"
     return f"{round(latency_seconds * 1000)} мс"
 
