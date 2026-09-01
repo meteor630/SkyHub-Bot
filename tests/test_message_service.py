@@ -20,7 +20,7 @@ def test_build_message_spec_from_plain_dict() -> None:
     )
     assert spec.title == "Добро пожаловать!"
     assert len(spec.sections) == 2
-    assert spec.sections[1].rendered_content() == "**•** Каналы\n**•** Voice"
+    assert spec.sections[1].rendered_content() == "- Каналы\n- Voice"
 
 
 def test_invalid_spec_raises_validation_error() -> None:
@@ -28,19 +28,27 @@ def test_invalid_spec_raises_validation_error() -> None:
         build_message_spec({"media": {"type": "not-a-real-type", "url": "https://example.com"}})
 
 
-# -- маркеры списка (bullet/circle/square/none) и вложенные подпункты ------
+# -- настоящий markdown-список Discord (marker: bullet/none) и вложенные --
 
-@pytest.mark.parametrize("marker,symbol", [("bullet", "•"), ("circle", "◦"), ("square", "▪"), ("none", "")])
-def test_marker_choice_for_top_level_items(marker: str, symbol: str) -> None:
-    spec = build_message_spec({"sections": [{"content": ["Пункт"], "marker": marker}]})
-    expected = f"**{symbol}** Пункт" if symbol else "Пункт"
-    assert spec.sections[0].rendered_content() == expected
+def test_marker_bullet_renders_native_dash_list() -> None:
+    """content-список по умолчанию рендерится настоящим markdown-списком
+    Discord ("- пункт") -- НЕ текстовым символом "•". Только так Discord
+    сам рисует крупную точку списка и держит отступ у переноса строки
+    внутри пункта (см. докстринг модуля -- сравнение со скриншотом)."""
+    spec = build_message_spec({"sections": [{"content": ["Пункт"], "marker": "bullet"}]})
+    assert spec.sections[0].rendered_content() == "- Пункт"
 
 
-def test_default_markers_match_bullet_top_and_circle_sub() -> None:
-    """По умолчанию -- закрашенный кружок сверху, пустой у вложенных
-    (ровно как в примере со скриншота: •, а под ним ○ А. / ○ Б.), оба
-    жирным -- маркер не должен теряться на фоне текста."""
+def test_marker_none_renders_plain_lines_without_dash() -> None:
+    spec = build_message_spec({"sections": [{"content": ["Пункт"], "marker": "none"}]})
+    assert spec.sections[0].rendered_content() == "Пункт"
+
+
+def test_nested_items_use_two_space_indent_dash() -> None:
+    """Вложенный пункт -- "  - подпункт" (отступ ровно 2 пробела перед
+    "-") -- это требование парсера списков Discord, не наш выбор
+    оформления. Форму самой точки (кружок/пустой кружок) для вложенного
+    уровня рисует сам Discord по своим правилам вложенности."""
     spec = build_message_spec(
         {
             "sections": [
@@ -53,20 +61,18 @@ def test_default_markers_match_bullet_top_and_circle_sub() -> None:
             ]
         }
     )
-    indent = "\xa0\xa0\xa0\xa0"
-    lines = spec.sections[0].rendered_content().split("\n")
-    assert lines[0] == "**•** Обычный пункт"
-    assert lines[1] == "**•** Пункт со вложенными"
-    assert lines[2] == indent + "**◦** Подпункт А"
-    assert lines[3] == indent + "**◦** Подпункт Б"
-
-
-def test_sub_marker_can_be_overridden_to_square() -> None:
-    spec = build_message_spec(
-        {"sections": [{"content": [{"text": "Пункт", "items": ["Вложенный"]}], "sub_marker": "square"}]}
+    assert spec.sections[0].rendered_content() == (
+        "- Обычный пункт\n- Пункт со вложенными\n  - Подпункт А\n  - Подпункт Б"
     )
-    indent = "\xa0\xa0\xa0\xa0"
-    assert spec.sections[0].rendered_content() == "**•** Пункт\n" + indent + "**▪** Вложенный"
+
+
+def test_manual_line_break_inside_one_item_keeps_it_a_single_bullet() -> None:
+    """Перенос строки ВНУТРИ одного пункта (не новый пункт списка) --
+    просто "\\n" в тексте самого пункта; наружу это идёт как есть, без
+    доп. префикса у второй строки -- отступ у неё держит сам Discord
+    (это блочный элемент списка, а не наш текстовый трюк)."""
+    spec = build_message_spec({"sections": [{"content": ["Первая часть.\nВторая часть."]}]})
+    assert spec.sections[0].rendered_content() == "- Первая часть.\nВторая часть."
 
 
 # -- заголовки разного размера (0 = жирным, 1/2/3 = #/##/###) --------------
