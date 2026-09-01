@@ -42,12 +42,21 @@ class WelcomeCog(commands.Cog):
         if not TEMPLATE_PATH.exists():
             return
         raw = TEMPLATE_PATH.read_text(encoding="utf-8")
-        raw = raw.replace("{mention}", member.mention).replace("{name}", member.display_name)
+        raw = raw.replace("{name}", member.display_name)
         data = yaml.safe_load(raw) or {}
         spec = build_message_spec(data)
 
-        for page in self.renderer.render(spec, bot_user=self.ctx.bot.user):
-            await channel.send(embeds=page)
+        pages = self.renderer.render(spec, bot_user=self.ctx.bot.user)
+        for index, page in enumerate(pages):
+            # Настоящее упоминание -- ОБЫЧНЫМ текстом сообщения, а не
+            # внутри embed'а: только так Discord гарантированно резолвит
+            # <@id> в имя на ВСЕХ клиентах (мобильный иначе иногда не
+            # успевает закэшировать нового участника сразу после входа и
+            # показывает голый "<@ID>" вместо упоминания). Пингуем только
+            # на первой странице -- дублировать упоминание на каждой
+            # последующей странице длинного сообщения незачем.
+            content = member.mention if index == 0 else None
+            await channel.send(content=content, embeds=page)
 
 
 class WelcomePlugin(BasePlugin):
