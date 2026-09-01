@@ -1,3 +1,15 @@
+# Лимит и ротация логов заданы явно для КАЖДОГО сервиса -- без этого
+# Docker по умолчанию пишет stdout/stderr контейнера в json-file без
+# ограничения размера, и он может незаметно разрастись до нескольких
+# гигабайт (именно так один раз кончилось место на диске: bot несколько
+# дней падал в цикле на ошибке в status_dashboard, и трейсбек в логе
+# копился без остановки).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   bot:
     build: .
@@ -14,6 +26,7 @@ services:
       - ./data:/app/data  # загруженные треки радио (plugins/radio) переживают пересборку образа
     stdin_open: true
     tty: true
+    logging: *default-logging
 
   postgres:
     image: postgres:16-alpine
@@ -29,6 +42,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    logging: *default-logging
 
   # Redis намеренно НЕ включён -- архитектура оставляет для него место
   # (см. раздел README "Что можно добавить дальше"), но в этом коде он
