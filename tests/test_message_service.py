@@ -157,6 +157,24 @@ def test_blockquote_section_stays_in_same_embed_as_main_text() -> None:
     assert "> **Сноска**\n> детали" in embeds[0].description
 
 
+# -- мелкий серый текст (родная фича Discord "subtext", "-# текст") -------
+
+def test_subtext_prefixes_every_line() -> None:
+    spec = build_message_spec(
+        {"sections": [{"title": "Дисклеймер", "content": "строка 1\nстрока 2", "subtext": True}]}
+    )
+    assert spec.sections[0].rendered_block() == "-# **Дисклеймер**\n-# строка 1\n-# строка 2"
+
+
+def test_subtext_and_blockquote_together_is_rejected() -> None:
+    """У Discord это два разных, взаимоисключающих формата начала
+    строки ("> " и "-# ") -- совместить их нельзя в принципе, поэтому
+    такая комбинация должна падать сразу на валидации, а не молча
+    ломать рендер."""
+    with pytest.raises(ValidationError):
+        build_message_spec({"sections": [{"content": "текст", "blockquote": True, "subtext": True}]})
+
+
 # -- цветные врезки-сноски (раздел со своим color -> отдельный embed) ------
 
 def test_section_with_color_becomes_its_own_embed() -> None:

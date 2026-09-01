@@ -45,7 +45,7 @@ from __future__ import annotations
 from typing import Literal
 
 import discord
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from utils.text import DISCORD_EMBED_DESCRIPTION_LIMIT, DISCORD_EMBED_TOTAL_LIMIT, paginate_label, split_text
 
@@ -131,6 +131,24 @@ class SectionSpec(BaseModel):
     # color, цвет остаётся общий (или свой, если задать color вместе с
     # new_card) -- только сам факт "новая карточка" включается отдельно.
     new_card: bool = False
+    # Мелкий серый текст -- родная фича Discord "subtext" (добавлена в
+    # июле 2024), не наша выдумка: строка с префиксом "-# " рисуется в
+    # 13px и серым вместо обычных 16px белым. Именно так выглядят
+    # приписки/дисклеймеры под правилами у крупных ботов. Работает
+    # только по ОДНОЙ строке за раз (Discord требует "-# " в начале
+    # КАЖДОЙ строки) -- поэтому, как и blockquote, применяется ко всему
+    # блоку раздела целиком. Несовместимо с blockquote -- у Discord это
+    # взаимоисключающие форматы начала строки (см. валидацию ниже).
+    subtext: bool = False
+
+    @model_validator(mode="after")
+    def _blockquote_and_subtext_are_mutually_exclusive(self) -> "SectionSpec":
+        if self.blockquote and self.subtext:
+            raise ValueError(
+                "blockquote и subtext нельзя сочетать в одном разделе -- у Discord это два разных "
+                "формата начала строки ('> ' и '-# '), она распознаёт только один из них за раз."
+            )
+        return self
 
     def rendered_content(self) -> str:
         if self.content is None:
@@ -167,6 +185,10 @@ class SectionSpec(BaseModel):
             # "> " перед каждой строкой -- иначе цитата Discord
             # обрывается на первом же переносе строки.
             block = "\n".join(f"> {line}" if line else ">" for line in block.split("\n"))
+        if self.subtext and block:
+            # "-# " перед каждой строкой -- Discord распознаёт subtext
+            # только в начале строки, на каждую строку заново.
+            block = "\n".join(f"-# {line}" if line else "-#" for line in block.split("\n"))
         return block
 
 
