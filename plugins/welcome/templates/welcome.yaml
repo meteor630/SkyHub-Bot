@@ -21,11 +21,5 @@ sections:
       - "Выберите необходимые роли"
       - "После этого получите доступ ко всем каналам"
 
-  - title: "🗺 Навигация"
-    content:
-      - "Основные каналы"
-      - "Авиасим"
-      - "ATC"
-
 footer:
-  text: "SkyHub Aviation"
+  text: "SkyHub Aviation • You are cleared for takeoff ✈️"
