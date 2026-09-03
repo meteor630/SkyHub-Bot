@@ -11,9 +11,7 @@ author:
   avatar: bot
 
 description: |
-  Привет, {mention}! Мы рады видеть тебя на сервере, посвящённом
-  авиасимуляторам, авиации, пилотам, диспетчерам и любителям неба.
+  Привет, {mention}! 👋 Добро пожаловать на SkyHub Aviation — место для тех, кто любит авиацию, полёты и небо. ✈️
+  Осмотрись, выбери свои роли и присоединяйся к полётам. Тебе разрешён взлёт — cleared for takeoff! 🛫
 
 
-footer:
-  text: "SkyHub Aviation • You are cleared for takeoff ✈️"
