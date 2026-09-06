@@ -125,6 +125,7 @@ class TicketPanelView(discord.ui.View):
                 name=f"{creator.display_name} -- #{ticket_id}"[:100],
                 embed=starter,
                 applied_tags=[tags[ticket_forum.TAG_OPEN]],
+                view=TicketControlView(self.ctx),
                 reason=f"Тикет #{ticket_id} от {creator}",
             )
             async with self.ctx.db.session() as session:
@@ -144,30 +145,49 @@ class TicketControlView(discord.ui.View):
 
 
 async def close_ticket(ctx, interaction: discord.Interaction) -> None:
+    """Закрывает тикет -- кнопка/команда работают ОДИНАКОВО что из
+    приватного канала автора, что из поста форума сапорта (у обоих один
+    и тот же custom_id "tickets:close", см. :class:`TicketControlView`),
+    поэтому здесь нужно определить, откуда именно нажали."""
     async with ctx.db.session() as session:
         repo = TicketRepository(session)
         ticket = await repo.get_by_channel_id(interaction.channel_id)
+        if ticket is None:
+            ticket = await repo.get_by_forum_thread_id(interaction.channel_id)
         if ticket is None or ticket.status != STATUS_OPEN:
             await interaction.response.send_message("⚠️ Это не открытое обращение.", ephemeral=True)
             return
+        channel_id = ticket.channel_id
         forum_thread_id = ticket.forum_thread_id
         creator_id = ticket.creator_id
-        await repo.close(interaction.channel_id, interaction.user.id)
+        await repo.close(channel_id, interaction.user.id)
 
+    closed_from_forum = interaction.channel_id == forum_thread_id
     await interaction.response.send_message("🔒 Обращение закрыто.")
 
-    # Канал НЕ удаляется (в отличие от старого поведения) -- только
-    # запрещаем автору писать дальше, чтобы переписка осталась доступна
-    # для истории. Автоудаление -- через месяц, отдельной фоновой
-    # задачей (см. TICKET_PURGE_AFTER_DAYS в plugins/tickets/plugin.py).
+    # Приватный канал НЕ удаляется сразу (в отличие от старого
+    # поведения) -- только запрещаем автору писать дальше, чтобы
+    # переписка осталась доступна для истории. Автоудаление -- через
+    # сутки для канала / через месяц для поста форума, отдельной
+    # фоновой задачей (см. plugins/tickets/plugin.py).
     guild = interaction.guild
     creator = guild.get_member(creator_id) if guild else None
-    if creator is not None and isinstance(interaction.channel, discord.TextChannel):
+    private_channel = guild.get_channel(channel_id) if guild else None
+    if creator is not None and isinstance(private_channel, discord.TextChannel):
         try:
-            await interaction.channel.set_permissions(
+            await private_channel.set_permissions(
                 creator, view_channel=True, send_messages=False, read_message_history=True,
                 reason="Обращение закрыто",
             )
+        except discord.HTTPException:
+            pass
+
+    # Если закрыли из форума -- автор кнопку/сообщение сапорта не
+    # видел (форум ему не показывается вообще, см. plugins/tickets/forum.py),
+    # поэтому дублируем уведомление в его собственный канал.
+    if closed_from_forum and isinstance(private_channel, discord.TextChannel):
+        try:
+            await private_channel.send(f"🔒 Обращение закрыто сапортом ({interaction.user.mention}).")
         except discord.HTTPException:
             pass
 
