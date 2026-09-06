@@ -316,6 +316,12 @@ async def close_ticket(ctx, interaction: discord.Interaction) -> None:
     closed_from_forum = interaction.channel_id == forum_thread_id
     delete_view = TicketDeleteView(ctx)
 
+    # Кто именно закрыл -- автор сам себе или кто-то из сапорта, с
+    # упоминанием (клиентский запрос: раньше это указывалось только в
+    # одном из двух сценариев закрытия, здесь -- везде одинаково).
+    closer_label = "автором" if interaction.user.id == creator_id else "сапортом"
+    close_notice = f"🔒 Обращение закрыто {closer_label} ({interaction.user.mention})."
+
     # Приватный канал НЕ удаляется сразу (в отличие от старого
     # поведения) -- только запрещаем автору писать дальше, чтобы
     # переписка осталась доступна для истории. Автоудаление -- через
@@ -339,19 +345,18 @@ async def close_ticket(ctx, interaction: discord.Interaction) -> None:
         # не показывается вообще, см. plugins/tickets/forum.py) --
         # уведомление и кнопка удаления идут отдельным сообщением сразу
         # в его канал, а тут -- просто короткое подтверждение сапорту.
-        await interaction.response.send_message("🔒 Обращение закрыто.")
+        await interaction.response.send_message(close_notice)
         if isinstance(private_channel, discord.TextChannel):
             try:
                 await private_channel.send(
-                    f"🔒 Обращение закрыто сапортом ({interaction.user.mention}). "
-                    f"Можете удалить этот канал кнопкой ниже, когда он больше не нужен.",
+                    f"{close_notice} Можете удалить этот канал кнопкой ниже, когда он больше не нужен.",
                     view=delete_view,
                 )
             except discord.HTTPException:
                 pass
     else:
         await interaction.response.send_message(
-            "🔒 Обращение закрыто. Можете удалить этот канал кнопкой ниже, когда он больше не нужен.",
+            f"{close_notice} Можете удалить этот канал кнопкой ниже, когда он больше не нужен.",
             view=delete_view,
         )
 
