@@ -18,6 +18,7 @@ from core.event_bus import EventBus
 from core.permissions import PermissionService
 from database.database import Database
 from logging_config import configure_logging
+from utils import ephemeral_autodelete
 from utils.cache import TTLCache
 from utils.i18n import I18n
 
@@ -52,6 +53,10 @@ async def _startup_watchdog(bot) -> None:
 async def async_main() -> None:
     settings = get_settings()
     configure_logging(level=settings.log_level, log_dir=settings.log_dir, json_file=settings.log_json)
+    # ДО того, как бот начнёт обрабатывать интеракции -- дальше все
+    # ephemeral-ответы (в любом плагине, без исключений) сами исчезают
+    # через EPHEMERAL_AUTODELETE_SECONDS (клиентский запрос).
+    ephemeral_autodelete.install()
 
     config = load_config(settings.config_path, settings.plugins_dir)
 
