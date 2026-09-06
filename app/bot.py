@@ -34,6 +34,30 @@ INTENTS.voice_states = True
 
 DISCORD_UNKNOWN_INTERACTION = 10062
 
+# Понятные названия для app_commands.TransformerError -- Discord называет
+# типы параметров по имени Python-класса ("Member", "TextChannel" и
+# т.п.), увидеть это в сообщении пользователю неинформативно.
+_FRIENDLY_TRANSFORMER_NAMES = {
+    "Member": "участника", "User": "пользователя", "Role": "роль",
+    "TextChannel": "канал", "VoiceChannel": "канал", "ForumChannel": "канал",
+    "CategoryChannel": "канал", "StageChannel": "канал", "GuildChannel": "канал",
+}
+
+
+def _transformer_error_message(error: app_commands.TransformerError) -> str:
+    """Понятное сообщение для ``TransformerError`` -- это НЕ баг бота,
+    а Discord не смог сопоставить введённый текст с реальным участником/
+    каналом/ролью, обычно потому что пользователь напечатал текст руками
+    и нажал Enter, не выбрав подсказку из автодополнения (у параметров
+    такого типа выбор из подсказки обязателен -- без него значение не
+    резолвится). См. вызов в :meth:`SkyHubBot._on_app_command_error`."""
+    display_name = getattr(error.transformer, "_error_display_name", "значение")
+    kind = _FRIENDLY_TRANSFORMER_NAMES.get(display_name, "значение")
+    return (
+        f"⚠️ Не нашёл {kind} «{error.value}» -- начните печатать имя/название "
+        f"и **выберите вариант из подсказки Discord**, не просто печатайте текст и жмите Enter."
+    )
+
 
 def _is_expired_interaction(error: BaseException) -> bool:
     """True, если ошибка -- это ``discord.NotFound`` с кодом 10062
@@ -189,6 +213,11 @@ class SkyHubBot(commands.Bot):
             message = self.i18n.t("error.permission_denied", required=error.required.name)
         elif isinstance(error, app_commands.CommandOnCooldown):
             message = f"⏳ Подождите {error.retry_after:.0f} сек. перед повторным использованием."
+        elif isinstance(error, app_commands.TransformerError):
+            # Не стоит гонять через полноценный ErrorHandler с трейсбеком
+            # и ERR-кодом -- это шумит канал ошибок ложной тревогой на
+            # обычную опечатку пользователя, не баг бота.
+            message = _transformer_error_message(error)
         else:
             plugin_name = interaction.command.qualified_name if interaction.command else None
             error_id = await self.error_handler.handle(
