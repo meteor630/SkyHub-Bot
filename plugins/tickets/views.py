@@ -306,9 +306,22 @@ async def close_ticket(ctx, interaction: discord.Interaction) -> None:
         ticket = await repo.get_by_channel_id(interaction.channel_id)
         if ticket is None:
             ticket = await repo.get_by_forum_thread_id(interaction.channel_id)
-        if ticket is None or ticket.status != STATUS_OPEN:
-            await interaction.response.send_message("⚠️ Это не открытое обращение.", ephemeral=True)
+        if ticket is None:
+            await interaction.response.send_message("⚠️ Обращение не найдено.", ephemeral=True)
             return
+
+        if ticket.status != STATUS_OPEN:
+            # Уже закрыто -- скорее всего автор закрыл его сам чуть
+            # раньше из своего канала, пока сапорт смотрел на пост
+            # форума. Раньше это отвечало непонятным "не открытое
+            # обращение"; теперь -- явно объясняем и заодно приводим
+            # пост форума в соответствие (вдруг тег/архивация не
+            # применились с первого раза).
+            if ticket.forum_thread_id:
+                await _archive_forum_thread(ctx, ticket.forum_thread_id)
+            await interaction.response.send_message("ℹ️ Обращение уже было закрыто ранее.", ephemeral=True)
+            return
+
         channel_id = ticket.channel_id
         forum_thread_id = ticket.forum_thread_id
         creator_id = ticket.creator_id
@@ -360,15 +373,40 @@ async def close_ticket(ctx, interaction: discord.Interaction) -> None:
             f"{close_notice} Можете удалить этот канал кнопкой ниже, когда он больше не нужен.",
             view=delete_view,
         )
+        # Обратное направление -- то же уведомление, но в пост форума:
+        # раньше при закрытии из приватного канала форум только молча
+        # получал тег/архивацию, без единого сообщения о том, кто и
+        # когда закрыл (отсюда и жалоба -- сапорт этого не видел).
+        if forum_thread_id:
+            await _notify_forum_thread(ctx, forum_thread_id, close_notice)
 
     if forum_thread_id:
         await _archive_forum_thread(ctx, forum_thread_id)
 
 
+async def _resolve_forum_thread(ctx, forum_thread_id: int) -> discord.Thread | None:
+    thread = ctx.bot.get_channel(forum_thread_id) or await ctx.bot.fetch_channel(forum_thread_id)
+    if isinstance(thread, discord.Thread) and isinstance(thread.parent, discord.ForumChannel):
+        return thread
+    return None
+
+
+async def _notify_forum_thread(ctx, forum_thread_id: int, message: str) -> None:
+    """Отправляет сообщение в пост форума -- ДО архивации/блокировки
+    (заблокированный тред новых сообщений не принимает), best-effort:
+    отсутствие уведомления не должно мешать закрытию тикета."""
+    try:
+        thread = await _resolve_forum_thread(ctx, forum_thread_id)
+        if thread is not None:
+            await thread.send(message)
+    except discord.HTTPException as exc:
+        await ctx.report_error(exc, event="ticket_forum_notify", forum_thread_id=forum_thread_id)
+
+
 async def _archive_forum_thread(ctx, forum_thread_id: int) -> None:
     try:
-        thread = ctx.bot.get_channel(forum_thread_id) or await ctx.bot.fetch_channel(forum_thread_id)
-        if not isinstance(thread, discord.Thread) or not isinstance(thread.parent, discord.ForumChannel):
+        thread = await _resolve_forum_thread(ctx, forum_thread_id)
+        if thread is None:
             return
         tags = await ticket_forum.ensure_forum_tags(thread.parent)
         applied = [tag for tag in thread.applied_tags if tag.name != ticket_forum.TAG_OPEN]
