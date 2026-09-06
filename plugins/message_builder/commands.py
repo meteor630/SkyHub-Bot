@@ -19,6 +19,21 @@
 и отдельно попросить бота отправить embed уже ВНУТРЬ него -- отсюда и
 "Оригинальное сообщение удалено" у плейсхолдера. Теперь бот создаёт
 пост целиком сам, embed сразу становится стартовым сообщением.
+
+``channel`` здесь -- ОБЫЧНАЯ строка с автодополнением из ``guild.channels``
+(собственный кэш бота, который discord.py обновляет мгновенно по
+гейтвей-событиям), а НЕ нативный channel-тип параметра slash-команды
+(``discord.TextChannel | discord.ForumChannel``, как было раньше). У
+нативного параметра та же проблема, что и у ``discord.ui.ChannelSelect``/
+``RoleSelect`` (см. подробное расследование в docstring
+``plugins/server_setup/commands.py``): список вариантов в выпадающем
+списке строит и отдаёт сервер Discord через свой отдельный внутренний
+механизм автозаполнения -- он на практике иногда показывает не все
+каналы, которые реально есть на сервере (в т.ч. форум-каналы, из-за
+чего в /embed их вообще не было видно в списке). Собственное
+автодополнение, построенное из кэша бота, от этого недостатка не
+страдает -- ровно тот же принцип, что и у ``ManualChannelSelect`` в
+``/setup``.
 """
 from __future__ import annotations
 
@@ -36,11 +51,49 @@ from utils.text import DISCORD_MESSAGE_LIMIT, split_text
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
+_TEXT_CHANNEL_TYPES = (discord.ChannelType.text, discord.ChannelType.news)
+_TEXT_OR_FORUM_CHANNEL_TYPES = (
+    discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.forum, discord.ChannelType.media,
+)
+
 
 def _list_templates() -> list[str]:
     if not TEMPLATES_DIR.exists():
         return []
     return sorted(p.stem for p in TEMPLATES_DIR.glob("*.yaml"))
+
+
+def _guild_channel_choices(
+    guild: discord.Guild, current: str, *, channel_types: tuple[discord.ChannelType, ...],
+) -> list[app_commands.Choice[str]]:
+    """Варианты автодополнения ``channel`` -- построены вручную из
+    ``guild.channels`` (см. подробности в docstring модуля)."""
+    channels = sorted(
+        (c for c in guild.channels if c.type in channel_types),
+        key=lambda c: (c.position, c.name.lower()),
+    )
+    current_lower = current.lower()
+    if current_lower:
+        channels = [c for c in channels if current_lower in c.name.lower()]
+    return [app_commands.Choice(name=f"#{c.name}", value=str(c.id)) for c in channels[:25]]
+
+
+def _resolve_channel_choice(
+    guild: discord.Guild | None, raw: str | None, *, channel_types: tuple[discord.ChannelType, ...],
+) -> discord.abc.GuildChannel | None:
+    """Резолвит значение параметра ``channel``: либо ID из автодополнения,
+    либо ID/``<#id>``-упоминание, введённое вручную. ``None``, если
+    ``raw`` пуст или ничего подходящего не нашлось (вызывающий код в
+    этом случае сам решает, что подставить по умолчанию)."""
+    if not raw or guild is None:
+        return None
+    cleaned = raw.strip().removeprefix("<#").removesuffix(">")
+    if not cleaned.isdigit():
+        return None
+    channel = guild.get_channel(int(cleaned))
+    if channel is not None and channel.type in channel_types:
+        return channel
+    return None
 
 
 async def _deliver_pages(
@@ -66,6 +119,10 @@ async def _deliver_pages(
 
 def _forum_missing_topic_error() -> str:
     return "⚠️ Для форум-канала укажите `topic` -- название поста (у форума нет обычного текста, только посты)."
+
+
+def _channel_not_found_error() -> str:
+    return "⚠️ Канал не найден -- выберите его из автодополнения (начните печатать название) или укажите #упоминание/ID."
 
 
 class AnnounceModal(discord.ui.Modal, title="Новое объявление"):
@@ -111,16 +168,32 @@ class MessageBuilderCog(commands.Cog):
             if current.lower() in name.lower()
         ][:25]
 
+    async def _text_channel_autocomplete(self, interaction: discord.Interaction, current: str):
+        if interaction.guild is None:
+            return []
+        return _guild_channel_choices(interaction.guild, current, channel_types=_TEXT_CHANNEL_TYPES)
+
+    async def _text_or_forum_channel_autocomplete(self, interaction: discord.Interaction, current: str):
+        if interaction.guild is None:
+            return []
+        return _guild_channel_choices(interaction.guild, current, channel_types=_TEXT_OR_FORUM_CHANNEL_TYPES)
+
     @app_commands.command(name="message", description="Отправить текстовое сообщение (с авто-разбиением на части)")
-    @app_commands.describe(text="Текст сообщения", channel="Куда отправить (по умолчанию -- текущий канал)")
+    @app_commands.describe(text="Текст сообщения", channel="Куда отправить (начните печатать название; по умолчанию -- текущий канал)")
+    @app_commands.autocomplete(channel=_text_channel_autocomplete)
     @require(Role.SUPPORT)
     @app_commands.checks.cooldown(1, 10.0)
-    async def message(self, interaction: discord.Interaction, text: str, channel: discord.TextChannel | None = None) -> None:
+    async def message(self, interaction: discord.Interaction, text: str, channel: str | None = None) -> None:
         # У форум-канала нет обычного текста (только посты с темой) --
         # для "красивого" поста с заголовком/картинкой используйте
         # /embed или /message_template, они умеют создавать посты форума.
         await interaction.response.defer(ephemeral=True)
-        target = channel or interaction.channel
+        resolved = _resolve_channel_choice(interaction.guild, channel, channel_types=_TEXT_CHANNEL_TYPES)
+        if channel and resolved is None:
+            await interaction.followup.send(_channel_not_found_error(), ephemeral=True)
+            return
+
+        target = resolved or interaction.channel
         chunks = split_text(text, DISCORD_MESSAGE_LIMIT - 20)
         for index, chunk in enumerate(chunks, start=1):
             prefix = f"**MESSAGE {index}/{len(chunks)}**\n" if len(chunks) > 1 else ""
@@ -130,9 +203,10 @@ class MessageBuilderCog(commands.Cog):
     @app_commands.command(name="embed", description="Отправить оформленное embed-сообщение (или создать пост в форуме)")
     @app_commands.describe(
         title="Заголовок", description="Текст", color="Цвет полосы слева (hex, напр. 2B6CB0)",
-        image_url="URL изображения/GIF", channel="Куда отправить (обычный канал ИЛИ форум-канал)",
+        image_url="URL изображения/GIF", channel="Куда отправить -- обычный канал ИЛИ форум-канал (начните печатать название)",
         topic="Название поста -- нужно, ТОЛЬКО если channel -- форум-канал",
     )
+    @app_commands.autocomplete(channel=_text_or_forum_channel_autocomplete)
     @require(Role.SUPPORT)
     @app_commands.checks.cooldown(1, 10.0)
     async def embed(
@@ -142,7 +216,7 @@ class MessageBuilderCog(commands.Cog):
         description: str,
         color: str | None = None,
         image_url: str | None = None,
-        channel: discord.TextChannel | discord.ForumChannel | None = None,
+        channel: str | None = None,
         topic: str | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -166,7 +240,12 @@ class MessageBuilderCog(commands.Cog):
             await interaction.followup.send(f"⚠️ Некорректные данные: {exc}", ephemeral=True)
             return
 
-        target = channel or interaction.channel
+        resolved = _resolve_channel_choice(interaction.guild, channel, channel_types=_TEXT_OR_FORUM_CHANNEL_TYPES)
+        if channel and resolved is None:
+            await interaction.followup.send(_channel_not_found_error(), ephemeral=True)
+            return
+
+        target = resolved or interaction.channel
         if isinstance(target, discord.ForumChannel) and not topic:
             await interaction.followup.send(_forum_missing_topic_error(), ephemeral=True)
             return
@@ -177,29 +256,32 @@ class MessageBuilderCog(commands.Cog):
         await interaction.followup.send(f"✅ Отправлено.{note}", ephemeral=True)
 
     @app_commands.command(name="announce", description="Открыть форму для оформленного объявления")
-    @app_commands.describe(channel="Куда отправить (по умолчанию -- текущий канал; можно и форум-канал)")
+    @app_commands.describe(channel="Куда отправить -- обычный канал ИЛИ форум-канал (по умолчанию -- текущий канал)")
+    @app_commands.autocomplete(channel=_text_or_forum_channel_autocomplete)
     @require(Role.MODERATOR)
-    async def announce(
-        self, interaction: discord.Interaction, channel: discord.TextChannel | discord.ForumChannel | None = None,
-    ) -> None:
-        # send_modal -- это и есть подтверждение интеракции, defer() здесь
-        # не нужен (и невозможен -- нельзя и то, и другое сразу).
-        target = channel or interaction.channel
+    async def announce(self, interaction: discord.Interaction, channel: str | None = None) -> None:
+        resolved = _resolve_channel_choice(interaction.guild, channel, channel_types=_TEXT_OR_FORUM_CHANNEL_TYPES)
+        if channel and resolved is None:
+            await interaction.response.send_message(_channel_not_found_error(), ephemeral=True)
+            return
+
+        target = resolved or interaction.channel
         if not isinstance(target, (discord.TextChannel, discord.ForumChannel)):
             await interaction.response.send_message("⚠️ Объявление можно отправить только в текстовый или форум-канал.", ephemeral=True)
             return
+        # send_modal -- это и есть подтверждение интеракции, defer() здесь
+        # не нужен (и невозможен -- нельзя и то, и другое сразу).
         await interaction.response.send_modal(AnnounceModal(self.renderer, target))
 
     @app_commands.command(name="message_template", description="Отправить сообщение из готового шаблона (или создать пост в форуме)")
     @app_commands.describe(
-        template="Имя шаблона", channel="Куда отправить (обычный канал ИЛИ форум-канал)",
+        template="Имя шаблона", channel="Куда отправить -- обычный канал ИЛИ форум-канал (начните печатать название)",
         topic="Название поста -- нужно, ТОЛЬКО если channel -- форум-канал",
     )
-    @app_commands.autocomplete(template=_template_autocomplete)
+    @app_commands.autocomplete(template=_template_autocomplete, channel=_text_or_forum_channel_autocomplete)
     @require(Role.SUPPORT)
     async def message_template(
-        self, interaction: discord.Interaction, template: str,
-        channel: discord.TextChannel | discord.ForumChannel | None = None, topic: str | None = None,
+        self, interaction: discord.Interaction, template: str, channel: str | None = None, topic: str | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
@@ -214,7 +296,12 @@ class MessageBuilderCog(commands.Cog):
             await interaction.followup.send(f"⚠️ Ошибка в шаблоне: {exc}", ephemeral=True)
             return
 
-        target = channel or interaction.channel
+        resolved = _resolve_channel_choice(interaction.guild, channel, channel_types=_TEXT_OR_FORUM_CHANNEL_TYPES)
+        if channel and resolved is None:
+            await interaction.followup.send(_channel_not_found_error(), ephemeral=True)
+            return
+
+        target = resolved or interaction.channel
         if isinstance(target, discord.ForumChannel) and not topic:
             await interaction.followup.send(_forum_missing_topic_error(), ephemeral=True)
             return
