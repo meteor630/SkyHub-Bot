@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import discord
 
-from database.models.ticket import STATUS_OPEN
+from database.models.ticket import STATUS_CLOSED, STATUS_OPEN
 from database.repositories.ticket_repository import TicketRepository
 from plugins.tickets import forum as ticket_forum
 
@@ -144,6 +144,42 @@ class TicketControlView(discord.ui.View):
         await close_ticket(self.ctx, interaction)
 
 
+class TicketDeleteView(discord.ui.View):
+    """Кнопка ТОЛЬКО для приватного канала ЗАКРЫТОГО тикета -- автор
+    (или сапорт) может сразу удалить свою копию, не дожидаясь
+    автоудаления через ``CHANNEL_PURGE_AFTER_DAYS`` (см.
+    plugins/tickets/plugin.py) -- чтобы список каналов не засорялся
+    старыми закрытыми обращениями (клиентский запрос)."""
+
+    def __init__(self, ctx) -> None:
+        super().__init__(timeout=None)
+        self.ctx = ctx
+
+    @discord.ui.button(label="Удалить чат", emoji="🗑️", style=discord.ButtonStyle.secondary, custom_id="tickets:delete_channel")
+    async def delete(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        async with self.ctx.db.session() as session:
+            ticket = await TicketRepository(session).get_by_channel_id(interaction.channel_id)
+
+        if ticket is None:
+            await interaction.response.send_message("⚠️ Обращение не найдено.", ephemeral=True)
+            return
+        if ticket.status != STATUS_CLOSED:
+            await interaction.response.send_message("⚠️ Сначала закройте обращение кнопкой «Закрыть» -- удалить можно только закрытый чат.", ephemeral=True)
+            return
+
+        is_author = interaction.user.id == ticket.creator_id
+        is_staff = isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_channels
+        if not (is_author or is_staff):
+            await interaction.response.send_message("⚠️ Удалить канал может только автор обращения (или сапорт).", ephemeral=True)
+            return
+
+        await interaction.response.send_message("🗑️ Канал удаляется...")
+        try:
+            await interaction.channel.delete(reason=f"Автор удалил свой закрытый тикет ({interaction.user})")
+        except discord.HTTPException as exc:
+            await self.ctx.report_error(exc, event="ticket_manual_delete", channel_id=interaction.channel_id)
+
+
 async def close_ticket(ctx, interaction: discord.Interaction) -> None:
     """Закрывает тикет -- кнопка/команда работают ОДИНАКОВО что из
     приватного канала автора, что из поста форума сапорта (у обоих один
@@ -163,13 +199,14 @@ async def close_ticket(ctx, interaction: discord.Interaction) -> None:
         await repo.close(channel_id, interaction.user.id)
 
     closed_from_forum = interaction.channel_id == forum_thread_id
-    await interaction.response.send_message("🔒 Обращение закрыто.")
+    delete_view = TicketDeleteView(ctx)
 
     # Приватный канал НЕ удаляется сразу (в отличие от старого
     # поведения) -- только запрещаем автору писать дальше, чтобы
     # переписка осталась доступна для истории. Автоудаление -- через
     # сутки для канала / через месяц для поста форума, отдельной
-    # фоновой задачей (см. plugins/tickets/plugin.py).
+    # фоновой задачей (см. plugins/tickets/plugin.py) -- либо раньше,
+    # если автор сам нажмёт "Удалить чат" ниже.
     guild = interaction.guild
     creator = guild.get_member(creator_id) if guild else None
     private_channel = guild.get_channel(channel_id) if guild else None
@@ -182,14 +219,26 @@ async def close_ticket(ctx, interaction: discord.Interaction) -> None:
         except discord.HTTPException:
             pass
 
-    # Если закрыли из форума -- автор кнопку/сообщение сапорта не
-    # видел (форум ему не показывается вообще, см. plugins/tickets/forum.py),
-    # поэтому дублируем уведомление в его собственный канал.
-    if closed_from_forum and isinstance(private_channel, discord.TextChannel):
-        try:
-            await private_channel.send(f"🔒 Обращение закрыто сапортом ({interaction.user.mention}).")
-        except discord.HTTPException:
-            pass
+    if closed_from_forum:
+        # Автор кнопку/сообщение сапорта в форуме не видел (форум ему
+        # не показывается вообще, см. plugins/tickets/forum.py) --
+        # уведомление и кнопка удаления идут отдельным сообщением сразу
+        # в его канал, а тут -- просто короткое подтверждение сапорту.
+        await interaction.response.send_message("🔒 Обращение закрыто.")
+        if isinstance(private_channel, discord.TextChannel):
+            try:
+                await private_channel.send(
+                    f"🔒 Обращение закрыто сапортом ({interaction.user.mention}). "
+                    f"Можете удалить этот канал кнопкой ниже, когда он больше не нужен.",
+                    view=delete_view,
+                )
+            except discord.HTTPException:
+                pass
+    else:
+        await interaction.response.send_message(
+            "🔒 Обращение закрыто. Можете удалить этот канал кнопкой ниже, когда он больше не нужен.",
+            view=delete_view,
+        )
 
     if forum_thread_id:
         await _archive_forum_thread(ctx, forum_thread_id)

@@ -34,7 +34,7 @@ from core.base_plugin import BasePlugin, PluginMeta
 from database.repositories.ticket_repository import TicketRepository
 from plugins.tickets.bridge import build_ticket_bridge_cog
 from plugins.tickets.commands import build_ticket_cog
-from plugins.tickets.views import TicketControlView, TicketPanelView
+from plugins.tickets.views import TicketControlView, TicketDeleteView, TicketPanelView
 
 # Раз в 6 часов вполне достаточно -- тикетов закрывается не так много,
 # чтобы гнаться за секундной точностью автоудаления.
@@ -58,6 +58,7 @@ class TicketsPlugin(BasePlugin):
         # ещё до того, как бот подключился к шлюзу.
         self.ctx.bot.add_view(TicketPanelView(self.ctx))
         self.ctx.bot.add_view(TicketControlView(self.ctx))
+        self.ctx.bot.add_view(TicketDeleteView(self.ctx))
         self.log.info("tickets готов к работе")
 
     async def start(self) -> None:
