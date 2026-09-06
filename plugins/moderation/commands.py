@@ -99,6 +99,21 @@ class ModerationCog(commands.Cog):
         self._emit(interaction.guild_id, "timeout", interaction.user, member.id, reason, minutes=minutes)
         await interaction.followup.send(f"⏱ {member.mention} получил(а) тайм-аут на {minutes} мин.", ephemeral=True)
 
+    @mod_group.command(name="untimeout", description="Снять тайм-аут с участника досрочно")
+    @app_commands.describe(member="С кого снять", reason="Причина")
+    @require(Role.MODERATOR)
+    @app_commands.checks.cooldown(5, 30.0)
+    async def untimeout(self, interaction: discord.Interaction, member: discord.Member, reason: str | None = None) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if not await self._check_hierarchy(interaction, member):
+            return
+        if member.timed_out_until is None:
+            await interaction.followup.send(f"⚠️ У {member.mention} сейчас нет тайм-аута.", ephemeral=True)
+            return
+        await self.service.remove_timeout(member, interaction.user, reason)
+        self._emit(interaction.guild_id, "untimeout", interaction.user, member.id, reason)
+        await interaction.followup.send(f"✅ Тайм-аут снят с {member.mention}.", ephemeral=True)
+
     @mod_group.command(name="warn", description="Выдать предупреждение участнику")
     @app_commands.describe(member="Кому выдать", reason="Причина")
     @require(Role.SUPPORT)

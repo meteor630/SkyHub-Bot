@@ -56,6 +56,14 @@ class ModerationService:
             reason=reason, extra={"minutes": duration_minutes},
         )
 
+    async def remove_timeout(self, target: discord.Member, moderator: discord.Member, reason: str | None) -> None:
+        """Снимает тайм-аут досрочно -- у Discord это тот же метод, что и
+        выдача тайм-аута, просто с ``None`` вместо даты окончания."""
+        await target.timeout(None, reason=reason)
+        await self._record(
+            guild_id=target.guild.id, action="untimeout", target_id=target.id, moderator_id=moderator.id, reason=reason,
+        )
+
     async def warn(self, guild_id: int, target_id: int, moderator: discord.Member, reason: str | None) -> int:
         await self._record(guild_id=guild_id, action="warn", target_id=target_id, moderator_id=moderator.id, reason=reason)
         async with self.db.session() as session:
