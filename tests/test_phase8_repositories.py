@@ -135,6 +135,24 @@ async def test_ticket_lifecycle_and_counts(session) -> None:
     assert (open_count, closed_count) == (0, 1)
 
 
+async def test_latest_created_at_tracks_most_recent_ticket_regardless_of_status(session) -> None:
+    """См. plugins/tickets/views.py -- CREATE_COOLDOWN_SECONDS считается
+    от последнего обращения участника, ОТКРЫТОГО или уже закрытого."""
+    repo = TicketRepository(session)
+    assert await repo.latest_created_at(GUILD_ID, USER_ID) is None
+
+    first = await repo.create(guild_id=GUILD_ID, channel_id=2010, creator_id=USER_ID, reason=None)
+    assert await repo.latest_created_at(GUILD_ID, USER_ID) == first.created_at
+
+    await repo.close(2010, closed_by_id=OTHER_USER_ID)
+    # Закрытие не должно "сбрасывать" -- по-прежнему это самое свежее.
+    assert await repo.latest_created_at(GUILD_ID, USER_ID) == first.created_at
+
+    # Другой участник на этом сервере не влияет на результат для USER_ID.
+    await repo.create(guild_id=GUILD_ID, channel_id=2011, creator_id=OTHER_USER_ID, reason=None)
+    assert await repo.latest_created_at(GUILD_ID, USER_ID) == first.created_at
+
+
 async def test_ticket_forum_thread_linking_and_reverse_lookup(session) -> None:
     """См. plugins/tickets/forum.py -- у тикета опционально есть пост в
     форуме сапорта, привязываемый ПОСЛЕ создания записи (пост создаётся

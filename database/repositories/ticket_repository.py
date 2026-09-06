@@ -55,6 +55,19 @@ class TicketRepository(BaseRepository[Ticket]):
         result = await self.session.execute(stmt)
         return len(result.scalars().all())
 
+    async def latest_created_at(self, guild_id: int, creator_id: int) -> dt.datetime | None:
+        """Момент создания САМОГО СВЕЖЕГО обращения этого участника (в т.ч.
+        уже закрытого) -- основа для антиспам-паузы между созданием новых
+        обращений (см. CREATE_COOLDOWN_SECONDS в plugins/tickets/views.py)."""
+        stmt = (
+            select(Ticket.created_at)
+            .where(Ticket.guild_id == guild_id, Ticket.creator_id == creator_id)
+            .order_by(Ticket.created_at.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def counts_for_guild(self, guild_id: int) -> tuple[int, int]:
         """Возвращает (открытых, закрытых) тикетов (для ``/server stats``)."""
         stmt = select(Ticket.status, func.count(Ticket.id)).where(Ticket.guild_id == guild_id).group_by(Ticket.status)
