@@ -34,6 +34,14 @@
 автодополнение, построенное из кэша бота, от этого недостатка не
 страдает -- ровно тот же принцип, что и у ``ManualChannelSelect`` в
 ``/setup``.
+
+Пинги ролей/участников (``mentions``, у ``/embed``/``/announce``/
+``/message_template``) отправляются ОБЫЧНЫМ текстом сообщения
+(``content=``), а не внутри embed'а -- по той же причине, что и в
+``plugins/welcome/plugin.py``: упоминание внутри embed'а не присылает
+реальный пуш-пинг и иногда не резолвится в цветное имя на некоторых
+клиентах (см. историю правки приветствия). Только упоминание в
+``content`` гарантированно красится в цвет роли и реально пингует.
 """
 from __future__ import annotations
 
@@ -96,23 +104,63 @@ def _resolve_channel_choice(
     return None
 
 
+def _resolve_mentions(guild: discord.Guild | None, raw: str | list[str] | None) -> tuple[str | None, list[str]]:
+    """Резолвит роли/участников (по имени, ID или ``@``/``<@...>``-
+    упоминанию) в НАСТОЯЩИЕ Discord-упоминания -- их нужно отправить
+    обычным текстом сообщения (``content=``), а не внутрь embed'а (см.
+    docstring модуля). Возвращает (готовая строка упоминаний через
+    пробел, или None -- список НЕ найденных токенов, чтобы предупредить
+    автора об опечатке, а не молча её проглотить)."""
+    if not raw or guild is None:
+        return None, []
+    tokens = raw if isinstance(raw, list) else raw.split(",")
+    tokens = [t.strip() for t in tokens if t.strip()]
+
+    mentions: list[str] = []
+    unresolved: list[str] = []
+    for token in tokens:
+        cleaned = token.lstrip("@").removeprefix("<@&").removeprefix("<@").removesuffix(">")
+        role = discord.utils.get(guild.roles, id=int(cleaned)) if cleaned.isdigit() else None
+        role = role or discord.utils.find(lambda r, c=cleaned: r.name.lower() == c.lower(), guild.roles)
+        if role is not None:
+            mentions.append(role.mention)
+            continue
+
+        member = guild.get_member(int(cleaned)) if cleaned.isdigit() else None
+        member = member or discord.utils.find(
+            lambda m, c=cleaned: c.lower() in {m.name.lower(), (m.global_name or "").lower(), m.display_name.lower()},
+            guild.members,
+        )
+        if member is not None:
+            mentions.append(member.mention)
+            continue
+
+        unresolved.append(token)
+
+    return (" ".join(mentions) if mentions else None), unresolved
+
+
 async def _deliver_pages(
-    target: discord.abc.GuildChannel, pages: list[list[discord.Embed]], *, topic: str | None,
+    target: discord.abc.GuildChannel, pages: list[list[discord.Embed]], *, topic: str | None, content: str | None = None,
 ) -> discord.abc.Messageable:
     """Отправляет отрендеренные страницы (см. ``MessageRenderer.render``)
     в обычный канал -- как раньше, по одному сообщению на страницу. Если
     ``target`` -- форум-канал, вместо этого создаёт НОВЫЙ пост: первая
     страница целиком (эмбеды + картинка) становится стартовым сообщением
     поста, остальные страницы (если контент не влез в одно сообщение)
-    уходят следом уже в сам созданный тред. Возвращает канал/тред, куда
-    реально ушло сообщение -- пригодится для финального "✅ Отправлено"."""
+    уходят следом уже в сам созданный тред. ``content`` (готовые
+    Discord-упоминания, см. :func:`_resolve_mentions`) идёт ТОЛЬКО у
+    самого первого сообщения -- дублировать пинг на каждой странице
+    длинного объявления незачем. Возвращает канал/тред, куда реально
+    ушло сообщение -- пригодится для финального "✅ Отправлено"."""
+    first, *rest = pages
     if isinstance(target, discord.ForumChannel):
-        first, *rest = pages
-        result = await target.create_thread(name=(topic or "Без темы")[:100], embeds=first)
+        result = await target.create_thread(name=(topic or "Без темы")[:100], content=content, embeds=first)
         for page in rest:
             await result.thread.send(embeds=page)
         return result.thread
-    for page in pages:
+    await target.send(content=content, embeds=first)
+    for page in rest:
         await target.send(embeds=page)
     return target
 
@@ -130,6 +178,9 @@ class AnnounceModal(discord.ui.Modal, title="Новое объявление"):
     body = discord.ui.TextInput(label="Текст", style=discord.TextStyle.paragraph, max_length=4000)
     image_url = discord.ui.TextInput(label="Изображение / GIF (URL, опционально)", required=False)
     topic = discord.ui.TextInput(label="Тема поста (только для форум-канала)", required=False, max_length=100)
+    mentions = discord.ui.TextInput(
+        label="Роли/участники для пинга (через запятую)", required=False, max_length=300,
+    )
 
     def __init__(self, renderer: MessageRenderer, channel: discord.abc.GuildChannel) -> None:
         super().__init__()
@@ -150,9 +201,15 @@ class AnnounceModal(discord.ui.Modal, title="Новое объявление"):
                 "author": {"enabled": True, "name": interaction.guild.name if interaction.guild else "SkyHub", "avatar": "bot"},
             }
         )
+        mention_content, unresolved = _resolve_mentions(interaction.guild, str(self.mentions.value) or None)
+
         pages = self._renderer.render(spec, bot_user=interaction.client.user)
-        destination = await _deliver_pages(self._channel, pages, topic=str(self.topic.value) if self.topic.value else None)
+        destination = await _deliver_pages(
+            self._channel, pages, topic=str(self.topic.value) if self.topic.value else None, content=mention_content,
+        )
         note = f" Пост: {destination.mention}" if isinstance(self._channel, discord.ForumChannel) else ""
+        if unresolved:
+            note += f" ⚠️ Не нашёл: {', '.join(unresolved)}."
         await interaction.followup.send(f"✅ Объявление отправлено.{note}", ephemeral=True)
 
 
@@ -205,6 +262,7 @@ class MessageBuilderCog(commands.Cog):
         title="Заголовок", description="Текст", color="Цвет полосы слева (hex, напр. 2B6CB0)",
         image_url="URL изображения/GIF", channel="Куда отправить -- обычный канал ИЛИ форум-канал (начните печатать название)",
         topic="Название поста -- нужно, ТОЛЬКО если channel -- форум-канал",
+        mentions="Роли/участники для пинга через запятую (по имени, ID или упоминанию) -- пингуются и красятся по-настоящему",
     )
     @app_commands.autocomplete(channel=_text_or_forum_channel_autocomplete)
     @require(Role.SUPPORT)
@@ -218,6 +276,7 @@ class MessageBuilderCog(commands.Cog):
         image_url: str | None = None,
         channel: str | None = None,
         topic: str | None = None,
+        mentions: str | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
@@ -250,9 +309,13 @@ class MessageBuilderCog(commands.Cog):
             await interaction.followup.send(_forum_missing_topic_error(), ephemeral=True)
             return
 
+        mention_content, unresolved = _resolve_mentions(interaction.guild, mentions)
+
         pages = self.renderer.render(spec, bot_user=interaction.client.user)
-        destination = await _deliver_pages(target, pages, topic=topic)
+        destination = await _deliver_pages(target, pages, topic=topic, content=mention_content)
         note = f" Пост: {destination.mention}" if isinstance(target, discord.ForumChannel) else ""
+        if unresolved:
+            note += f" ⚠️ Не нашёл: {', '.join(unresolved)}."
         await interaction.followup.send(f"✅ Отправлено.{note}", ephemeral=True)
 
     @app_commands.command(name="announce", description="Открыть форму для оформленного объявления")
@@ -306,9 +369,17 @@ class MessageBuilderCog(commands.Cog):
             await interaction.followup.send(_forum_missing_topic_error(), ephemeral=True)
             return
 
+        # "mentions" -- необязательный ключ ВЕРХНЕГО уровня YAML (список
+        # имён/ID ролей или участников), не часть MessageSpec -- пинг
+        # должен уйти обычным текстом (content=), а не внутрь embed'а
+        # (см. docstring модуля), поэтому резолвится отдельно от рендера.
+        mention_content, unresolved = _resolve_mentions(interaction.guild, data.get("mentions"))
+
         pages = self.renderer.render(spec, bot_user=interaction.client.user)
-        destination = await _deliver_pages(target, pages, topic=topic)
+        destination = await _deliver_pages(target, pages, topic=topic, content=mention_content)
         note = f" Пост: {destination.mention}" if isinstance(target, discord.ForumChannel) else ""
+        if unresolved:
+            note += f" ⚠️ Не нашёл: {', '.join(unresolved)}."
         await interaction.followup.send(f"✅ Отправлено.{note}", ephemeral=True)
 
 

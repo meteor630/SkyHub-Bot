@@ -15,6 +15,7 @@ from plugins.message_builder.commands import (
     _forum_missing_topic_error,
     _guild_channel_choices,
     _resolve_channel_choice,
+    _resolve_mentions,
 )
 
 
@@ -27,6 +28,24 @@ def _make_channel(spec: type, *, id: int, name: str, position: int, type_: disco
     return channel
 
 
+def _make_role(*, id: int, name: str) -> Mock:
+    role = Mock(spec=discord.Role)
+    role.id = id
+    role.name = name
+    role.mention = f"<@&{id}>"
+    return role
+
+
+def _make_member(*, id: int, name: str, display_name: str | None = None, global_name: str | None = None) -> Mock:
+    member = Mock(spec=discord.Member)
+    member.id = id
+    member.name = name
+    member.display_name = display_name or name
+    member.global_name = global_name
+    member.mention = f"<@{id}>"
+    return member
+
+
 async def test_deliver_pages_to_regular_channel_sends_each_page_in_order() -> None:
     channel = Mock(spec=discord.TextChannel)
     channel.send = AsyncMock()
@@ -36,7 +55,21 @@ async def test_deliver_pages_to_regular_channel_sends_each_page_in_order() -> No
 
     assert destination is channel
     assert channel.send.await_args_list == [
-        ((), {"embeds": ["embed1"]}),
+        ((), {"content": None, "embeds": ["embed1"]}),
+        ((), {"embeds": ["embed2"]}),
+    ]
+
+
+async def test_deliver_pages_puts_content_only_on_first_message() -> None:
+    """content (готовые пинги, см. _resolve_mentions) не должен
+    дублироваться на каждой странице длинного объявления."""
+    channel = Mock(spec=discord.TextChannel)
+    channel.send = AsyncMock()
+
+    await _deliver_pages(channel, [["embed1"], ["embed2"]], topic=None, content="<@&1> <@2>")
+
+    assert channel.send.await_args_list == [
+        ((), {"content": "<@&1> <@2>", "embeds": ["embed1"]}),
         ((), {"embeds": ["embed2"]}),
     ]
 
@@ -53,7 +86,7 @@ async def test_deliver_pages_to_forum_creates_thread_from_first_page() -> None:
 
     destination = await _deliver_pages(forum, pages, topic="Важно")
 
-    forum.create_thread.assert_awaited_once_with(name="Важно", embeds=["embed1"])
+    forum.create_thread.assert_awaited_once_with(name="Важно", content=None, embeds=["embed1"])
     assert thread.send.await_args_list == [
         ((), {"embeds": ["embed2"]}),
         ((), {"embeds": ["embed3"]}),
@@ -160,3 +193,83 @@ def test_resolve_channel_choice_returns_none_without_guild_or_raw_value() -> Non
     assert _resolve_channel_choice(None, "42", channel_types=_TEXT_CHANNEL_TYPES) is None
     assert _resolve_channel_choice(guild, None, channel_types=_TEXT_CHANNEL_TYPES) is None
     assert _resolve_channel_choice(guild, "не-число", channel_types=_TEXT_CHANNEL_TYPES) is None
+
+
+# -- _resolve_mentions -- реальные пинги для content=, не для embed'а -----
+# (см. docstring модуля: упоминание внутри embed'а не пингует и не всегда
+# красится в цвет роли -- та же причина, что чинилась в plugins/welcome).
+
+def _guild_with(*, roles: list[Mock] = (), members: list[Mock] = ()) -> Mock:
+    guild = Mock(spec=discord.Guild)
+    guild.roles = list(roles)
+    guild.members = list(members)
+    guild.get_member = lambda mid: next((m for m in guild.members if m.id == mid), None)
+    return guild
+
+
+def test_resolve_mentions_by_role_name_case_insensitive() -> None:
+    pilot = _make_role(id=1, name="Pilot")
+    guild = _guild_with(roles=[pilot])
+
+    content, unresolved = _resolve_mentions(guild, "pilot")
+
+    assert content == "<@&1>"
+    assert unresolved == []
+
+
+def test_resolve_mentions_by_role_id_and_raw_mention_syntax() -> None:
+    pilot = _make_role(id=1, name="Pilot")
+    guild = _guild_with(roles=[pilot])
+
+    assert _resolve_mentions(guild, "1")[0] == "<@&1>"
+    assert _resolve_mentions(guild, "<@&1>")[0] == "<@&1>"
+    assert _resolve_mentions(guild, "@Pilot")[0] == "<@&1>"
+
+
+def test_resolve_mentions_by_member_username_display_name_or_global_name() -> None:
+    member = _make_member(id=100, name="jdoe", display_name="Johnny", global_name="John Doe")
+    guild = _guild_with(members=[member])
+
+    assert _resolve_mentions(guild, "jdoe")[0] == "<@100>"
+    assert _resolve_mentions(guild, "Johnny")[0] == "<@100>"
+    assert _resolve_mentions(guild, "John Doe")[0] == "<@100>"
+    assert _resolve_mentions(guild, "100")[0] == "<@100>"
+    assert _resolve_mentions(guild, "<@100>")[0] == "<@100>"
+
+
+def test_resolve_mentions_combines_multiple_comma_separated_tokens() -> None:
+    pilot = _make_role(id=1, name="Pilot")
+    member = _make_member(id=100, name="jdoe")
+    guild = _guild_with(roles=[pilot], members=[member])
+
+    content, unresolved = _resolve_mentions(guild, "Pilot, jdoe")
+
+    assert content == "<@&1> <@100>"
+    assert unresolved == []
+
+
+def test_resolve_mentions_reports_unresolved_tokens_without_dropping_the_rest() -> None:
+    pilot = _make_role(id=1, name="Pilot")
+    guild = _guild_with(roles=[pilot])
+
+    content, unresolved = _resolve_mentions(guild, "Pilot, НесуществующаяРоль")
+
+    assert content == "<@&1>"
+    assert unresolved == ["НесуществующаяРоль"]
+
+
+def test_resolve_mentions_accepts_list_input_from_yaml_template() -> None:
+    pilot = _make_role(id=1, name="Pilot")
+    guild = _guild_with(roles=[pilot])
+
+    content, unresolved = _resolve_mentions(guild, ["Pilot"])
+
+    assert content == "<@&1>"
+    assert unresolved == []
+
+
+def test_resolve_mentions_returns_empty_without_guild_or_raw_value() -> None:
+    guild = _guild_with()
+    assert _resolve_mentions(None, "Pilot") == (None, [])
+    assert _resolve_mentions(guild, None) == (None, [])
+    assert _resolve_mentions(guild, "") == (None, [])
