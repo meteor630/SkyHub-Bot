@@ -65,6 +65,22 @@ _TEXT_OR_FORUM_CHANNEL_TYPES = (
 )
 
 
+def _unescape_newlines(text: str) -> str:
+    """Слэш-команды Discord не дают вставить настоящий перенос строки в
+    текстовый параметр напрямую -- поле однострочное на уровне
+    интерфейса: Enter либо ничего не делает, либо норовит отправить
+    саму команду, а вставка уже готового многострочного текста тоже не
+    сохраняет переносы (проверено на практике). Поэтому здесь вручную
+    напечатанные literal ``\\n`` (обратный слэш + n, два обычных
+    символа) распознаются как настоящий перенос строки -- в отличие от
+    YAML-шаблонов, где то же самое делает сам синтаксис двойных кавычек,
+    у голого текстового параметра slash-команды никакого escape-
+    механизма по умолчанию нет, это наша собственная, а не платформенная
+    конвенция. Модальные окна (``/announce``) в этом не нуждаются -- там
+    Enter работает как обычно, это уже настоящее многострочное поле."""
+    return text.replace("\\n", "\n")
+
+
 def _list_templates() -> list[str]:
     if not TEMPLATES_DIR.exists():
         return []
@@ -236,7 +252,10 @@ class MessageBuilderCog(commands.Cog):
         return _guild_channel_choices(interaction.guild, current, channel_types=_TEXT_OR_FORUM_CHANNEL_TYPES)
 
     @app_commands.command(name="message", description="Отправить текстовое сообщение (с авто-разбиением на части)")
-    @app_commands.describe(text="Текст сообщения", channel="Куда отправить (начните печатать название; по умолчанию -- текущий канал)")
+    @app_commands.describe(
+        text=r"Текст сообщения (\n -- перенос строки, слэш-команды не дают вставить настоящий Enter)",
+        channel="Куда отправить (начните печатать название; по умолчанию -- текущий канал)",
+    )
     @app_commands.autocomplete(channel=_text_channel_autocomplete)
     @require(Role.SUPPORT)
     @app_commands.checks.cooldown(1, 10.0)
@@ -251,7 +270,7 @@ class MessageBuilderCog(commands.Cog):
             return
 
         target = resolved or interaction.channel
-        chunks = split_text(text, DISCORD_MESSAGE_LIMIT - 20)
+        chunks = split_text(_unescape_newlines(text), DISCORD_MESSAGE_LIMIT - 20)
         for index, chunk in enumerate(chunks, start=1):
             prefix = f"**MESSAGE {index}/{len(chunks)}**\n" if len(chunks) > 1 else ""
             await target.send(prefix + chunk)
@@ -259,7 +278,8 @@ class MessageBuilderCog(commands.Cog):
 
     @app_commands.command(name="embed", description="Отправить оформленное embed-сообщение (или создать пост в форуме)")
     @app_commands.describe(
-        title="Заголовок", description="Текст", color="Цвет полосы слева (hex, напр. 2B6CB0)",
+        title="Заголовок", description=r"Текст (\n -- перенос строки, слэш-команды не дают вставить настоящий Enter)",
+        color="Цвет полосы слева (hex, напр. 2B6CB0)",
         image_url="URL изображения/GIF", channel="Куда отправить -- обычный канал ИЛИ форум-канал (начните печатать название)",
         topic="Название поста -- нужно, ТОЛЬКО если channel -- форум-канал",
         mentions="Роли/участники для пинга через запятую (по имени, ID или упоминанию) -- пингуются и красятся по-настоящему",
@@ -290,7 +310,7 @@ class MessageBuilderCog(commands.Cog):
             spec = build_message_spec(
                 {
                     "title": title,
-                    "description": description,
+                    "description": _unescape_newlines(description),
                     "color": parsed_color,
                     "media": {"type": "image", "url": image_url} if image_url else None,
                 }

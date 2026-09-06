@@ -16,7 +16,20 @@ from plugins.message_builder.commands import (
     _guild_channel_choices,
     _resolve_channel_choice,
     _resolve_mentions,
+    _unescape_newlines,
 )
+
+
+def test_unescape_newlines_converts_literal_backslash_n() -> None:
+    assert _unescape_newlines(r"Первая строка\nВторая строка") == "Первая строка\nВторая строка"
+
+
+def test_unescape_newlines_handles_multiple_occurrences() -> None:
+    assert _unescape_newlines(r"a\nb\nc") == "a\nb\nc"
+
+
+def test_unescape_newlines_leaves_text_without_escapes_untouched() -> None:
+    assert _unescape_newlines("обычный текст без переносов") == "обычный текст без переносов"
 
 
 def _make_channel(spec: type, *, id: int, name: str, position: int, type_: discord.ChannelType) -> Mock:
