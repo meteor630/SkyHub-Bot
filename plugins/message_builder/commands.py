@@ -157,7 +157,8 @@ def _resolve_mentions(guild: discord.Guild | None, raw: str | list[str] | None) 
 
 
 async def _deliver_pages(
-    target: discord.abc.GuildChannel, pages: list[list[discord.Embed]], *, topic: str | None, content: str | None = None,
+    target: discord.abc.GuildChannel | discord.Thread, pages: list[list[discord.Embed]], *,
+    topic: str | None, content: str | None = None,
 ) -> discord.abc.Messageable:
     """Отправляет отрендеренные страницы (см. ``MessageRenderer.render``)
     в обычный канал -- как раньше, по одному сообщению на страницу. Если
@@ -384,8 +385,13 @@ class MessageBuilderCog(commands.Cog):
             return
 
         target = resolved or interaction.channel
-        if not isinstance(target, (discord.TextChannel, discord.ForumChannel)):
-            await interaction.response.send_message("⚠️ Объявление можно отправить только в текстовый или форум-канал.", ephemeral=True)
+        # Тред (в т.ч. пост форума, если команду вызвали прямо внутри
+        # него, не указав channel) -- тоже валидная цель: у него есть
+        # обычный .send(), как и у текстового канала, отдельная логика
+        # "создать НОВЫЙ пост" (ForumChannel.create_thread) для него не
+        # нужна -- см. _deliver_pages.
+        if not isinstance(target, (discord.TextChannel, discord.ForumChannel, discord.Thread)):
+            await interaction.response.send_message("⚠️ Объявление можно отправить только в текстовый канал, тред или форум-канал.", ephemeral=True)
             return
         # send_modal -- это и есть подтверждение интеракции, defer() здесь
         # не нужен (и невозможен -- нельзя и то, и другое сразу). Поэтому
