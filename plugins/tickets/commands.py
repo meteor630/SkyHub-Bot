@@ -20,10 +20,17 @@ class TicketCog(commands.Cog):
     async def panel(self, interaction: discord.Interaction) -> None:
         embed = discord.Embed(
             title="🎫 Поддержка",
-            description="Нажмите кнопку ниже, чтобы создать приватное обращение -- с вами свяжется поддержка.",
+            description="Нажмите кнопку ниже, чтобы создать приватное обращение - с вами свяжется специалист.",
             color=discord.Color.blurple(),
         )
-        await interaction.response.send_message(embed=embed, view=TicketPanelView(self.ctx))
+        # Панель отправляется ОБЫЧНЫМ сообщением в канал, а не прямым
+        # ответом на интеракцию -- у прямого ответа Discord всегда
+        # добавляет сверху строку "Имя использует /ticket panel", что
+        # для постоянной панели (не разового ответа) смотрится лишним.
+        # Подтверждение админу, наоборот, ephemeral -- его никто, кроме
+        # нажавшего, не увидит.
+        await interaction.channel.send(embed=embed, view=TicketPanelView(self.ctx))
+        await interaction.response.send_message("✅ Панель опубликована.", ephemeral=True)
 
     @ticket_group.command(name="close", description="Закрыть текущее обращение (внутри канала тикета)")
     async def close(self, interaction: discord.Interaction) -> None:
