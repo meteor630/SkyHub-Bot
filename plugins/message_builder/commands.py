@@ -189,6 +189,20 @@ def _channel_not_found_error() -> str:
     return "⚠️ Канал не найден -- выберите его из автодополнения (начните печатать название) или укажите #упоминание/ID."
 
 
+def _parse_color(color: str | None) -> tuple[int | None, str | None]:
+    """Разбирает hex-строку цвета (``"2B6CB0"``, необязательный ``#``).
+    ``None`` вместо цвета -- не ошибка, а сигнал использовать цвет
+    по умолчанию (``DEFAULT_COLOR`` в ``services/message_service.py``,
+    подставляется уже на этапе рендера -- см. ``MessageRenderer._paginate``).
+    Возвращает (число или None, текст ошибки или None)."""
+    if not color:
+        return None, None
+    try:
+        return int(color.removeprefix("#"), 16), None
+    except ValueError:
+        return None, "⚠️ Некорректный цвет, используйте hex, напр. `2B6CB0`."
+
+
 class AnnounceModal(discord.ui.Modal, title="Новое объявление"):
     announce_title = discord.ui.TextInput(label="Заголовок", max_length=256)
     body = discord.ui.TextInput(label="Текст", style=discord.TextStyle.paragraph, max_length=4000)
@@ -198,10 +212,15 @@ class AnnounceModal(discord.ui.Modal, title="Новое объявление"):
         label="Роли/участники для пинга (через запятую)", required=False, max_length=300,
     )
 
-    def __init__(self, renderer: MessageRenderer, channel: discord.abc.GuildChannel) -> None:
+    def __init__(
+        self, renderer: MessageRenderer, channel: discord.abc.GuildChannel, *,
+        color: int | None, show_author: bool,
+    ) -> None:
         super().__init__()
         self._renderer = renderer
         self._channel = channel
+        self._color = color
+        self._show_author = show_author
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -213,8 +232,13 @@ class AnnounceModal(discord.ui.Modal, title="Новое объявление"):
             {
                 "title": str(self.announce_title),
                 "description": str(self.body),
+                "color": self._color,
                 "media": {"type": "image", "url": str(self.image_url)} if self.image_url.value else None,
-                "author": {"enabled": True, "name": interaction.guild.name if interaction.guild else "SkyHub", "avatar": "bot"},
+                # "Bot SkyHub | Community" НАД самим embed'ом (имя учётной
+                # записи бота) -- отдельное поле карточки, show_author
+                # управляет только СВОЕЙ строкой автора ВНУТРИ embed'а
+                # (иконка + имя сервера прямо над заголовком).
+                "author": {"enabled": self._show_author, "name": interaction.guild.name if interaction.guild else "SkyHub", "avatar": "bot"},
             }
         )
         mention_content, unresolved = _resolve_mentions(interaction.guild, str(self.mentions.value) or None)
@@ -300,10 +324,9 @@ class MessageBuilderCog(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
-        try:
-            parsed_color = int(color, 16) if color else None
-        except ValueError:
-            await interaction.followup.send("⚠️ Некорректный цвет, используйте hex, напр. `2B6CB0`.", ephemeral=True)
+        parsed_color, color_error = _parse_color(color)
+        if color_error:
+            await interaction.followup.send(color_error, ephemeral=True)
             return
 
         try:
@@ -339,10 +362,22 @@ class MessageBuilderCog(commands.Cog):
         await interaction.followup.send(f"✅ Отправлено.{note}", ephemeral=True)
 
     @app_commands.command(name="announce", description="Открыть форму для оформленного объявления")
-    @app_commands.describe(channel="Куда отправить -- обычный канал ИЛИ форум-канал (по умолчанию -- текущий канал)")
+    @app_commands.describe(
+        channel="Куда отправить -- обычный канал ИЛИ форум-канал (по умолчанию -- текущий канал)",
+        color="Цвет полосы слева (hex, напр. 2B6CB0) -- если не указать, обычный синий по умолчанию",
+        show_author="Показывать имя сервера и его иконку строкой над заголовком, внутри самой карточки (по умолчанию да)",
+    )
     @app_commands.autocomplete(channel=_text_or_forum_channel_autocomplete)
     @require(Role.MODERATOR)
-    async def announce(self, interaction: discord.Interaction, channel: str | None = None) -> None:
+    async def announce(
+        self, interaction: discord.Interaction, channel: str | None = None,
+        color: str | None = None, show_author: bool = True,
+    ) -> None:
+        parsed_color, color_error = _parse_color(color)
+        if color_error:
+            await interaction.response.send_message(color_error, ephemeral=True)
+            return
+
         resolved = _resolve_channel_choice(interaction.guild, channel, channel_types=_TEXT_OR_FORUM_CHANNEL_TYPES)
         if channel and resolved is None:
             await interaction.response.send_message(_channel_not_found_error(), ephemeral=True)
@@ -353,8 +388,13 @@ class MessageBuilderCog(commands.Cog):
             await interaction.response.send_message("⚠️ Объявление можно отправить только в текстовый или форум-канал.", ephemeral=True)
             return
         # send_modal -- это и есть подтверждение интеракции, defer() здесь
-        # не нужен (и невозможен -- нельзя и то, и другое сразу).
-        await interaction.response.send_modal(AnnounceModal(self.renderer, target))
+        # не нужен (и невозможен -- нельзя и то, и другое сразу). Поэтому
+        # цвет/показ автора -- параметры самой команды, а не поля формы:
+        # модальные окна Discord ограничены 5 текстовыми полями, а они уже
+        # заняты заголовком/текстом/картинкой/темой/пингами.
+        await interaction.response.send_modal(
+            AnnounceModal(self.renderer, target, color=parsed_color, show_author=show_author)
+        )
 
     @app_commands.command(name="message_template", description="Отправить сообщение из готового шаблона (или создать пост в форуме)")
     @app_commands.describe(

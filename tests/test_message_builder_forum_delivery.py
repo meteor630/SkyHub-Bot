@@ -14,10 +14,28 @@ from plugins.message_builder.commands import (
     _deliver_pages,
     _forum_missing_topic_error,
     _guild_channel_choices,
+    _parse_color,
     _resolve_channel_choice,
     _resolve_mentions,
     _unescape_newlines,
 )
+
+
+def test_parse_color_accepts_hex_with_or_without_hash() -> None:
+    assert _parse_color("2B6CB0") == (0x2B6CB0, None)
+    assert _parse_color("#2B6CB0") == (0x2B6CB0, None)
+
+
+def test_parse_color_none_or_empty_is_not_an_error() -> None:
+    """None -- сигнал использовать цвет по умолчанию, а не ошибка ввода."""
+    assert _parse_color(None) == (None, None)
+    assert _parse_color("") == (None, None)
+
+
+def test_parse_color_rejects_invalid_hex() -> None:
+    value, error = _parse_color("не-цвет")
+    assert value is None
+    assert error is not None
 
 
 def test_unescape_newlines_converts_literal_backslash_n() -> None:
