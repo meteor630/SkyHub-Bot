@@ -135,6 +135,43 @@ async def test_ticket_lifecycle_and_counts(session) -> None:
     assert (open_count, closed_count) == (0, 1)
 
 
+async def test_ticket_forum_thread_linking_and_reverse_lookup(session) -> None:
+    """См. plugins/tickets/forum.py -- у тикета опционально есть пост в
+    форуме сапорта, привязываемый ПОСЛЕ создания записи (пост создаётся
+    вторым шагом, уже зная ID тикета)."""
+    repo = TicketRepository(session)
+    ticket = await repo.create(guild_id=GUILD_ID, channel_id=2001, creator_id=USER_ID, reason=None)
+    assert ticket.forum_thread_id is None
+    assert await repo.get_by_forum_thread_id(9999) is None
+
+    await repo.set_forum_thread(ticket.id, 9999)
+    assert ticket.forum_thread_id == 9999
+    linked = await repo.get_by_forum_thread_id(9999)
+    assert linked is not None and linked.channel_id == 2001
+
+
+async def test_ticket_closed_before_cutoff_and_delete(session) -> None:
+    """См. plugins/tickets/plugin.py -- закрытые тикеты старше месяца
+    удаляются автоматически фоновой задачей."""
+    repo = TicketRepository(session)
+    old_ticket = await repo.create(guild_id=GUILD_ID, channel_id=2002, creator_id=USER_ID, reason=None)
+    recent_ticket = await repo.create(guild_id=GUILD_ID, channel_id=2003, creator_id=USER_ID, reason=None)
+
+    await repo.close(2002, closed_by_id=OTHER_USER_ID)
+    await repo.close(2003, closed_by_id=OTHER_USER_ID)
+    # Искусственно состариваем один из двух закрытых тикетов.
+    old_ticket.closed_at = dt.datetime.now(dt.UTC) - dt.timedelta(days=40)
+    await session.flush()
+
+    cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(days=30)
+    stale = await repo.closed_before(GUILD_ID, cutoff)
+    assert [t.channel_id for t in stale] == [2002]
+
+    await repo.delete(old_ticket.id)
+    assert await repo.get_by_channel_id(2002) is None
+    assert await repo.get_by_channel_id(2003) is not None  # свежий тикет не тронут
+
+
 # -- StatsRepository --------------------------------------------------
 
 def test_level_for_xp_curve() -> None:

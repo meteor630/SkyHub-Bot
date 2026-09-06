@@ -6,15 +6,22 @@
 после перезапуска процесса, потому что discord.py сопоставляет нажатие
 кнопки с обработчиком по ``custom_id``, а не по тому, что вью-объект
 всё ещё "жив" в памяти той же сессии.
+
+Каждый тикет живёт в ДВУХ местах одновременно (см. модуль-докстринг
+``database/models/ticket.py`` и ``plugins/tickets/forum.py`` -- почему
+именно так, а не одним общим форумом): приватный текстовый канал для
+автора и, если настроен ``tickets_forum_channel_id``, пост в приватном
+форуме для сапорта. ``plugins/tickets/bridge.py`` зеркалит сообщения
+между ними -- этот модуль отвечает только за сам жизненный цикл тикета
+(создание/закрытие), не за пересылку сообщений.
 """
 from __future__ import annotations
-
-import asyncio
 
 import discord
 
 from database.models.ticket import STATUS_OPEN
 from database.repositories.ticket_repository import TicketRepository
+from plugins.tickets import forum as ticket_forum
 
 MAX_OPEN_TICKETS_PER_USER = 3
 
@@ -61,15 +68,16 @@ class TicketPanelView(discord.ui.View):
                 await interaction.followup.send(f"⚠️ У вас уже открыто {open_count} обращени(й) -- закройте старые, прежде чем создавать новые.", ephemeral=True)
                 return
 
-        support_role_id = await self.ctx.guild_config().resolve_role_id(guild.id, "support")
-        moderator_role_id = await self.ctx.guild_config().resolve_role_id(guild.id, "moderator")
+        # Одни и те же роли видят и приватный канал, и (если настроен)
+        # форум-пост -- см. plugins/tickets/forum.py.
+        staff_role_ids = await ticket_forum.viewer_role_ids(self.ctx, guild.id)
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
             guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
         }
-        for role_id in {support_role_id, moderator_role_id} - {None}:
+        for role_id in staff_role_ids:
             role = guild.get_role(role_id)
             if role is not None:
                 overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
@@ -78,7 +86,10 @@ class TicketPanelView(discord.ui.View):
         channel = await guild.create_text_channel(name=safe_name, category=category, overwrites=overwrites)
 
         async with self.ctx.db.session() as session:
-            await TicketRepository(session).create(guild_id=guild.id, channel_id=channel.id, creator_id=interaction.user.id, reason=None)
+            ticket = await TicketRepository(session).create(
+                guild_id=guild.id, channel_id=channel.id, creator_id=interaction.user.id, reason=None,
+            )
+            ticket_id = ticket.id
 
         embed = discord.Embed(
             title="🎫 Новое обращение",
@@ -86,7 +97,40 @@ class TicketPanelView(discord.ui.View):
             color=discord.Color.blurple(),
         )
         await channel.send(embed=embed, view=TicketControlView(self.ctx))
+
+        await self._create_forum_post(guild, channel=channel, creator=interaction.user, ticket_id=ticket_id)
+
         await interaction.followup.send(f"✅ Обращение создано: {channel.mention}", ephemeral=True)
+
+    async def _create_forum_post(
+        self, guild: discord.Guild, *, channel: discord.TextChannel, creator: discord.abc.User, ticket_id: int,
+    ) -> None:
+        """Создаёт пост в форуме сапорта, если ``/setup tickets-forum``
+        настроен -- необязательный шаг: если форум не настроен или его
+        не удалось создать, тикет всё равно полностью работает через
+        приватный канал (просто без "витрины" для сапорта)."""
+        forum_channel_id = await self.ctx.guild_config().resolve_channel_id(guild.id, "tickets_forum")
+        forum = guild.get_channel(forum_channel_id) if forum_channel_id else None
+        if not isinstance(forum, discord.ForumChannel):
+            return
+
+        try:
+            tags = await ticket_forum.ensure_forum_tags(forum)
+            starter = discord.Embed(
+                title=f"🎫 Обращение -- {creator.display_name}",
+                description=f"Автор: {creator.mention}\nКанал: {channel.mention}",
+                color=discord.Color.blurple(),
+            )
+            result = await forum.create_thread(
+                name=f"{creator.display_name} -- #{ticket_id}"[:100],
+                embed=starter,
+                applied_tags=[tags[ticket_forum.TAG_OPEN]],
+                reason=f"Тикет #{ticket_id} от {creator}",
+            )
+            async with self.ctx.db.session() as session:
+                await TicketRepository(session).set_forum_thread(ticket_id, result.thread.id)
+        except Exception as exc:  # noqa: BLE001 -- форум необязателен, не должен ломать создание тикета
+            await self.ctx.report_error(exc, event="ticket_forum_post", guild_id=guild.id, ticket_id=ticket_id)
 
 
 class TicketControlView(discord.ui.View):
@@ -106,11 +150,39 @@ async def close_ticket(ctx, interaction: discord.Interaction) -> None:
         if ticket is None or ticket.status != STATUS_OPEN:
             await interaction.response.send_message("⚠️ Это не открытое обращение.", ephemeral=True)
             return
+        forum_thread_id = ticket.forum_thread_id
+        creator_id = ticket.creator_id
         await repo.close(interaction.channel_id, interaction.user.id)
 
-    await interaction.response.send_message("🔒 Обращение закрывается через 5 секунд...")
-    await asyncio.sleep(5)
+    await interaction.response.send_message("🔒 Обращение закрыто.")
+
+    # Канал НЕ удаляется (в отличие от старого поведения) -- только
+    # запрещаем автору писать дальше, чтобы переписка осталась доступна
+    # для истории. Автоудаление -- через месяц, отдельной фоновой
+    # задачей (см. TICKET_PURGE_AFTER_DAYS в plugins/tickets/plugin.py).
+    guild = interaction.guild
+    creator = guild.get_member(creator_id) if guild else None
+    if creator is not None and isinstance(interaction.channel, discord.TextChannel):
+        try:
+            await interaction.channel.set_permissions(
+                creator, view_channel=True, send_messages=False, read_message_history=True,
+                reason="Обращение закрыто",
+            )
+        except discord.HTTPException:
+            pass
+
+    if forum_thread_id:
+        await _archive_forum_thread(ctx, forum_thread_id)
+
+
+async def _archive_forum_thread(ctx, forum_thread_id: int) -> None:
     try:
-        await interaction.channel.delete(reason=f"Тикет закрыт {interaction.user}")
-    except discord.HTTPException:
-        pass
+        thread = ctx.bot.get_channel(forum_thread_id) or await ctx.bot.fetch_channel(forum_thread_id)
+        if not isinstance(thread, discord.Thread) or not isinstance(thread.parent, discord.ForumChannel):
+            return
+        tags = await ticket_forum.ensure_forum_tags(thread.parent)
+        applied = [tag for tag in thread.applied_tags if tag.name != ticket_forum.TAG_OPEN]
+        applied.append(tags[ticket_forum.TAG_CLOSED])
+        await thread.edit(applied_tags=applied, archived=True, locked=True, reason="Обращение закрыто")
+    except (discord.HTTPException, discord.NotFound, KeyError) as exc:
+        await ctx.report_error(exc, event="ticket_forum_archive", forum_thread_id=forum_thread_id)

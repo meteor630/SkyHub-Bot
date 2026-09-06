@@ -53,6 +53,21 @@ class GuildSettings(Base):
     flight_log_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     tickets_category_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
+    # Приватный форум-канал, куда каждый тикет попадает ОТДЕЛЬНЫМ постом
+    # для сапорта/админов -- см. /setup tickets-forum, plugins/tickets.
+    # Сам форум-канал видят только admin/moderator/support +
+    # ticket_viewer_role_ids ниже (бот сам держит его права в синхроне);
+    # автор обращения форум не видит вообще -- у Discord нет приватных
+    # постов внутри форума (см. docstring plugins/tickets/forum.py),
+    # поэтому автор общается в СВОЁМ приватном канале (tickets_category_id),
+    # а бот зеркалит сообщения в обе стороны между постом и этим каналом.
+    tickets_forum_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    # Доп. роли (сверх admin/moderator/support), которым нужен доступ ко
+    # ВСЕМ тикетам сразу -- и форуму для сапорта, и каждому приватному
+    # каналу тикета. См. /setup ticket-viewer-roles.
+    ticket_viewer_role_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+
     moderator_role_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     admin_role_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     support_role_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

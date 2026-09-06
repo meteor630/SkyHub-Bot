@@ -75,6 +75,7 @@ CHANNEL_SETTINGS: dict[str, tuple[str, type[discord.abc.GuildChannel], str]] = {
     "temp-voice-creator": ("temporary_voice_creator_channel_id", discord.VoiceChannel, "Создание временного voice"),
     "temp-voice-category": ("temporary_voice_category_id", discord.CategoryChannel, "Категория временных voice"),
     "tickets-category": ("tickets_category_id", discord.CategoryChannel, "Категория тикетов"),
+    "tickets-forum": ("tickets_forum_channel_id", discord.ForumChannel, "Форум для сапорта (тикеты)"),
     "voice-panel": ("voice_control_panel_channel_id", discord.TextChannel, "Центральная панель voice"),
 }
 
@@ -452,6 +453,101 @@ class TicketsSetupView(discord.ui.View):
         return callback
 
 
+class TicketsForumSetupView(discord.ui.View):
+    """Приватный форум-канал, куда попадает КАЖДЫЙ тикет отдельным
+    постом для сапорта -- см. модуль-докстринг plugins/tickets/forum.py
+    (почему это отдельный канал, а не тот же самый, что и приватные
+    каналы тикетов: у Discord форум-каналы не умеют скрывать отдельные
+    посты друг от друга, поэтому весь канал целиком закрыт от всех,
+    кроме сапорта/админов -- права на него бот держит сам)."""
+
+    def __init__(self, ctx, guild: discord.Guild) -> None:
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        select = ManualChannelSelect(guild=guild, channel_types=(discord.ChannelType.forum,), placeholder="Форум для тикетов сапорта")
+        select.callback = self._callback(select)
+        self.add_item(select)
+
+    def _callback(self, select: discord.ui.Select):
+        async def callback(interaction: discord.Interaction) -> None:
+            forum = await _resolve_selected_channel(interaction, select)
+            if forum is None:
+                return
+            async with self.ctx.db.session() as session:
+                repo = GuildRepository(session)
+                await repo.get_or_create(interaction.guild_id, interaction.guild.name)
+                await repo.update_settings(interaction.guild_id, tickets_forum_channel_id=forum.id)
+            self.ctx.guild_config().invalidate(interaction.guild_id)
+
+            from plugins.tickets import (
+                forum as ticket_forum,  # локальный импорт -- избегаем цикла server_setup <-> tickets
+            )
+
+            try:
+                await ticket_forum.sync_forum_permissions(self.ctx, interaction.guild, forum)
+                await ticket_forum.ensure_forum_tags(forum)
+            except discord.HTTPException as exc:
+                await interaction.response.send_message(
+                    f"✅ Форум тикетов -> **{forum.name}**, но не удалось настроить права/теги автоматически "
+                    f"({exc}) -- проверьте права бота на этом канале (Manage Channels).",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_message(
+                f"✅ Форум тикетов -> **{forum.name}** -- права и теги настроены автоматически "
+                f"(видят только admin/moderator/support + роли из `/setup ticket-viewer-roles`).",
+                ephemeral=True,
+            )
+
+        return callback
+
+
+class TicketViewerRolesSetupView(discord.ui.View):
+    """Мультивыбор ДОП. ролей (сверх admin/moderator/support), которым
+    нужен доступ ко ВСЕМ тикетам -- и форуму сапорта, и каждому
+    приватному каналу. См. plugins/tickets/forum.py."""
+
+    def __init__(self, ctx, guild: discord.Guild, current_role_ids: list[int]) -> None:
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        select = ManualRoleSelect(
+            guild=guild, placeholder="Доп. роли с доступом ко всем тикетам (можно несколько, можно пусто)",
+            min_values=0, max_values=25, default_role_ids=tuple(current_role_ids),
+        )
+        select.callback = self._callback(select)
+        self.add_item(select)
+
+    def _callback(self, select: discord.ui.Select):
+        async def callback(interaction: discord.Interaction) -> None:
+            role_ids = [role.id for role in await _resolve_selected_roles(interaction, select)]
+            async with self.ctx.db.session() as session:
+                repo = GuildRepository(session)
+                await repo.get_or_create(interaction.guild_id, interaction.guild.name)
+                settings = await repo.update_settings(interaction.guild_id, ticket_viewer_role_ids=role_ids)
+                forum_channel_id = settings.tickets_forum_channel_id
+            self.ctx.guild_config().invalidate(interaction.guild_id)
+
+            if role_ids:
+                mentions = ", ".join(f"<@&{rid}>" for rid in role_ids)
+                message = f"✅ Дополнительный доступ ко всем тикетам: {mentions}"
+            else:
+                message = "✅ Список дополнительных ролей очищен -- доступ только у admin/moderator/support."
+
+            forum = interaction.guild.get_channel(forum_channel_id) if forum_channel_id else None
+            if isinstance(forum, discord.ForumChannel):
+                from plugins.tickets import (
+                    forum as ticket_forum,  # локальный импорт -- избегаем цикла server_setup <-> tickets
+                )
+
+                try:
+                    await ticket_forum.sync_forum_permissions(self.ctx, interaction.guild, forum)
+                except discord.HTTPException as exc:
+                    message += f"\n⚠️ Не удалось обновить права форума автоматически ({exc})."
+            await interaction.response.send_message(message, ephemeral=True)
+
+        return callback
+
+
 class IgnoredRolesSetupView(discord.ui.View):
     """Мультивыбор ролей, изменения которых НЕ нужно писать в лог
     модерации -- удобно для самовыдаваемых ролей (авиасимулятор, регион
@@ -590,6 +686,26 @@ class ServerSetupCog(commands.Cog):
             view=TicketsSetupView(self.ctx, interaction.guild), ephemeral=True,
         )
 
+    @setup_group.command(name="tickets-forum", description="Настроить приватный форум для сапорта -- по посту на каждый тикет")
+    @require(Role.ADMIN)
+    async def tickets_forum(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message(
+            "Выберите ФОРУМ-канал, куда каждый тикет будет попадать отдельным постом для сапорта "
+            "(права канала бот настроит сам -- видят только admin/moderator/support + "
+            "`/setup ticket-viewer-roles`; автор обращения этот форум не видит -- см. `/ticket panel`):",
+            view=TicketsForumSetupView(self.ctx, interaction.guild), ephemeral=True,
+        )
+
+    @setup_group.command(name="ticket-viewer-roles", description="Доп. роли с доступом ко ВСЕМ тикетам (форум + приватные каналы)")
+    @require(Role.ADMIN)
+    async def ticket_viewer_roles(self, interaction: discord.Interaction) -> None:
+        settings = await self.ctx.guild_config().get_settings(interaction.guild_id)
+        current = list(settings.ticket_viewer_role_ids) if settings else []
+        await interaction.response.send_message(
+            "Выберите роли, которым (сверх admin/moderator/support) нужен доступ ко ВСЕМ тикетам сразу:",
+            view=TicketViewerRolesSetupView(self.ctx, interaction.guild, current), ephemeral=True,
+        )
+
     @setup_group.command(name="profile-roles", description="Настроить роли Discord для авиационных профилей")
     @app_commands.describe(
         pilot="Роль для Pilot", atc="Роль для ATC", virtual_airline="Роль для Virtual Airline",
@@ -687,7 +803,7 @@ class ServerSetupCog(commands.Cog):
     @require(Role.ADMIN)
     async def channel_by_mention(
         self, interaction: discord.Interaction, key: app_commands.Choice[str],
-        channel: discord.TextChannel | discord.VoiceChannel | discord.CategoryChannel | discord.StageChannel,
+        channel: discord.TextChannel | discord.VoiceChannel | discord.CategoryChannel | discord.StageChannel | discord.ForumChannel,
     ) -> None:
         attr, expected_type, label = CHANNEL_SETTINGS[key.value]
         if not isinstance(channel, expected_type):
@@ -705,7 +821,19 @@ class ServerSetupCog(commands.Cog):
         self.ctx.guild_config().invalidate(interaction.guild_id)
         if attr == "voice_control_panel_channel_id":
             self.ctx.emit(VoiceControlPanelChannelChanged(guild_id=interaction.guild_id, channel_id=channel.id))
-        await interaction.followup.send(f"✅ {label} -> {channel.mention}", ephemeral=True)
+
+        note = ""
+        if attr == "tickets_forum_channel_id" and isinstance(channel, discord.ForumChannel):
+            from plugins.tickets import (
+                forum as ticket_forum,  # локальный импорт -- избегаем цикла server_setup <-> tickets
+            )
+
+            try:
+                await ticket_forum.sync_forum_permissions(self.ctx, interaction.guild, channel)
+                await ticket_forum.ensure_forum_tags(channel)
+            except discord.HTTPException as exc:
+                note = f"\n⚠️ Не удалось настроить права/теги форума автоматически ({exc})."
+        await interaction.followup.send(f"✅ {label} -> {channel.mention}{note}", ephemeral=True)
 
     @setup_group.command(name="show", description="Показать текущую конфигурацию сервера")
     @require(Role.ADMIN)
@@ -747,6 +875,12 @@ class ServerSetupCog(commands.Cog):
             category = interaction.guild.get_channel(settings.tickets_category_id)
             category_name = category.name if category else f"`{settings.tickets_category_id}`"
         embed.add_field(name="Категория тикетов", value=category_name)
+        embed.add_field(name="Форум тикетов (сапорт)", value=fmt_channel(settings.tickets_forum_channel_id))
+        viewer_roles = (
+            ", ".join(f"<@&{rid}>" for rid in settings.ticket_viewer_role_ids)
+            if settings.ticket_viewer_role_ids else "—"
+        )
+        embed.add_field(name="Доп. роли-просмотрщики тикетов", value=viewer_roles[:1024])
 
         embed.add_field(name="Роль администратора", value=fmt_role(settings.admin_role_id))
         embed.add_field(name="Роль модератора", value=fmt_role(settings.moderator_role_id))

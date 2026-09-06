@@ -20,6 +20,34 @@ class TicketRepository(BaseRepository[Ticket]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_forum_thread_id(self, forum_thread_id: int) -> Ticket | None:
+        """Обратный поиск для моста форум-пост -> приватный канал (см.
+        plugins/tickets/bridge.py)."""
+        stmt = select(Ticket).where(Ticket.forum_thread_id == forum_thread_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def set_forum_thread(self, ticket_id: int, forum_thread_id: int) -> None:
+        record = await self.session.get(Ticket, ticket_id)
+        if record is not None:
+            record.forum_thread_id = forum_thread_id
+            await self.session.flush()
+
+    async def closed_before(self, guild_id: int, cutoff: dt.datetime) -> list[Ticket]:
+        """Закрытые тикеты старше ``cutoff`` -- кандидаты на автоудаление
+        (см. TICKET_PURGE_AFTER_DAYS в plugins/tickets/plugin.py)."""
+        stmt = select(Ticket).where(
+            Ticket.guild_id == guild_id, Ticket.status == STATUS_CLOSED, Ticket.closed_at < cutoff,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def delete(self, ticket_id: int) -> None:
+        record = await self.session.get(Ticket, ticket_id)
+        if record is not None:
+            await self.session.delete(record)
+            await self.session.flush()
+
     async def open_count_for_user(self, guild_id: int, creator_id: int) -> int:
         stmt = select(Ticket).where(
             Ticket.guild_id == guild_id, Ticket.creator_id == creator_id, Ticket.status == STATUS_OPEN

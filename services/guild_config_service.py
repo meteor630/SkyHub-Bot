@@ -28,6 +28,7 @@ _CHANNEL_ATTR = {
     "radio_voice": "radio_voice_channel_id",
     "radio_text": "radio_text_channel_id",
     "flight_log": "flight_log_channel_id",
+    "tickets_forum": "tickets_forum_channel_id",
 }
 
 _CATEGORY_ATTR = {
@@ -117,6 +118,15 @@ class GuildConfigService:
         if settings is None or not settings.voice_creator_presets:
             return {}
         return {int(channel_id): int(limit) for channel_id, limit in settings.voice_creator_presets.items()}
+
+    async def ticket_viewer_role_ids(self, guild_id: int) -> set[int]:
+        """Доп. роли (сверх admin/moderator/support), которым нужен доступ
+        ко ВСЕМ тикетам -- и форуму для сапорта, и каждому приватному
+        каналу. См. ``/setup ticket-viewer-roles``, plugins/tickets."""
+        settings = await self.get_settings(guild_id)
+        if settings is None or not settings.ticket_viewer_role_ids:
+            return set()
+        return {int(role_id) for role_id in settings.ticket_viewer_role_ids}
 
     async def resolve_profile_role_id(self, guild_id: int, role_type: str) -> int | None:
         """Discord-роль, соответствующая типу авиационного профиля
