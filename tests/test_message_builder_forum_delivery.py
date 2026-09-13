@@ -9,10 +9,12 @@ from unittest.mock import AsyncMock, Mock
 import discord
 
 from plugins.message_builder.commands import (
+    _ANNOUNCE_WEBHOOK_NAME,
     _TEXT_CHANNEL_TYPES,
     _TEXT_OR_FORUM_CHANNEL_TYPES,
     _deliver_pages,
     _forum_missing_topic_error,
+    _get_or_create_webhook,
     _guild_channel_choices,
     _parse_color,
     _resolve_channel_choice,
@@ -304,3 +306,113 @@ def test_resolve_mentions_returns_empty_without_guild_or_raw_value() -> None:
     assert _resolve_mentions(None, "Pilot") == (None, [])
     assert _resolve_mentions(guild, None) == (None, [])
     assert _resolve_mentions(guild, "") == (None, [])
+
+
+# -- persona/веб-хук (сообщение без бейджа "БОТ", своё имя/аватар) --------
+
+async def test_get_or_create_webhook_reuses_existing_by_name() -> None:
+    existing = Mock(spec=discord.Webhook)
+    existing.name = _ANNOUNCE_WEBHOOK_NAME
+    channel = Mock(spec=discord.TextChannel)
+    channel.webhooks = AsyncMock(return_value=[Mock(spec=discord.Webhook, name="other"), existing])
+    channel.create_webhook = AsyncMock()
+
+    result = await _get_or_create_webhook(channel)
+
+    assert result is existing
+    channel.create_webhook.assert_not_awaited()
+
+
+async def test_get_or_create_webhook_creates_when_missing() -> None:
+    created = Mock(spec=discord.Webhook)
+    channel = Mock(spec=discord.TextChannel)
+    channel.webhooks = AsyncMock(return_value=[])
+    channel.create_webhook = AsyncMock(return_value=created)
+
+    result = await _get_or_create_webhook(channel)
+
+    assert result is created
+    channel.create_webhook.assert_awaited_once()
+    assert channel.create_webhook.await_args.kwargs["name"] == _ANNOUNCE_WEBHOOK_NAME
+
+
+async def test_deliver_pages_with_persona_sends_via_webhook_not_bot() -> None:
+    """persona_name задан -- сообщение должно уйти через веб-хук
+    (channel.send бота вообще не должен вызываться), чтобы не показывать
+    бейдж "БОТ"."""
+    channel = Mock(spec=discord.TextChannel)
+    channel.send = AsyncMock()
+    webhook = Mock(spec=discord.Webhook)
+    webhook.send = AsyncMock(return_value=Mock())
+    webhook.name = _ANNOUNCE_WEBHOOK_NAME
+
+    async def fake_webhooks():
+        return [webhook]
+
+    channel.webhooks = fake_webhooks
+
+    destination = await _deliver_pages(
+        channel, [["embed1"], ["embed2"]], content="<@&1>",
+        persona_name="Паймон", persona_avatar_url="https://example.com/avatar.png",
+    )
+
+    assert destination is channel
+    channel.send.assert_not_called()
+    assert webhook.send.await_args_list == [
+        ((), {"content": "<@&1>", "embeds": ["embed1"], "username": "Паймон", "avatar_url": "https://example.com/avatar.png", "wait": True}),
+        ((), {"embeds": ["embed2"], "username": "Паймон", "avatar_url": "https://example.com/avatar.png", "wait": True}),
+    ]
+
+
+async def test_deliver_pages_with_persona_in_forum_creates_thread_via_webhook() -> None:
+    forum = Mock(spec=discord.ForumChannel)
+    thread = Mock(spec=discord.Thread)
+    webhook = Mock(spec=discord.Webhook)
+    webhook.send = AsyncMock(return_value=Mock(thread=thread))
+
+    async def fake_webhooks():
+        return []
+
+    forum.webhooks = fake_webhooks
+    forum.create_webhook = AsyncMock(return_value=webhook)
+
+    destination = await _deliver_pages(
+        forum, [["embed1"]], topic="Важно", persona_name="Паймон", persona_avatar_url=None,
+    )
+
+    assert destination is thread
+    assert webhook.send.await_args.kwargs["thread_name"] == "Важно"
+    assert webhook.send.await_args.kwargs["username"] == "Паймон"
+
+
+async def test_deliver_pages_with_persona_into_existing_thread_uses_thread_kwarg() -> None:
+    thread = Mock(spec=discord.Thread)
+    parent = Mock(spec=discord.ForumChannel)
+    thread.parent = parent
+    webhook = Mock(spec=discord.Webhook)
+    webhook.send = AsyncMock(return_value=Mock())
+
+    async def fake_webhooks():
+        return [webhook]
+
+    webhook.name = _ANNOUNCE_WEBHOOK_NAME
+    parent.webhooks = fake_webhooks
+
+    destination = await _deliver_pages(thread, [["embed1"]], persona_name="Паймон", persona_avatar_url=None)
+
+    assert destination is thread
+    assert webhook.send.await_args.kwargs["thread"] is thread
+
+
+async def test_deliver_pages_without_persona_uses_normal_bot_send() -> None:
+    """Обратная совместимость -- без persona_name всё работает ровно как
+    раньше, никакого веб-хука не создаётся и не запрашивается."""
+    channel = Mock(spec=discord.TextChannel)
+    channel.send = AsyncMock()
+    channel.webhooks = AsyncMock()
+
+    destination = await _deliver_pages(channel, [["embed1"]])
+
+    assert destination is channel
+    channel.send.assert_awaited_once_with(content=None, embeds=["embed1"])
+    channel.webhooks.assert_not_called()

@@ -156,9 +156,24 @@ def _resolve_mentions(guild: discord.Guild | None, raw: str | list[str] | None) 
     return (" ".join(mentions) if mentions else None), unresolved
 
 
+_ANNOUNCE_WEBHOOK_NAME = "SkyHub Announcements"
+
+
+async def _get_or_create_webhook(channel: discord.TextChannel | discord.ForumChannel) -> discord.Webhook:
+    """Веб-хук для отправки от имени персонажа/сервера вместо бота (см.
+    ``persona_name`` в :func:`_deliver_pages`) -- один на канал,
+    переиспользуется для всех последующих объявлений в нём, а не
+    создаётся заново на каждое сообщение."""
+    for webhook in await channel.webhooks():
+        if webhook.name == _ANNOUNCE_WEBHOOK_NAME:
+            return webhook
+    return await channel.create_webhook(name=_ANNOUNCE_WEBHOOK_NAME, reason="Объявления от имени персонажа/сервера")
+
+
 async def _deliver_pages(
     target: discord.abc.GuildChannel | discord.Thread, pages: list[list[discord.Embed]], *,
-    topic: str | None, content: str | None = None,
+    topic: str | None = None, content: str | None = None,
+    persona_name: str | None = None, persona_avatar_url: str | None = None,
 ) -> discord.abc.Messageable:
     """Отправляет отрендеренные страницы (см. ``MessageRenderer.render``)
     в обычный канал -- как раньше, по одному сообщению на страницу. Если
@@ -169,8 +184,39 @@ async def _deliver_pages(
     Discord-упоминания, см. :func:`_resolve_mentions`) идёт ТОЛЬКО у
     самого первого сообщения -- дублировать пинг на каждой странице
     длинного объявления незачем. Возвращает канал/тред, куда реально
-    ушло сообщение -- пригодится для финального "✅ Отправлено"."""
+    ушло сообщение -- пригодится для финального "✅ Отправлено".
+
+    Если задан ``persona_name`` -- сообщение уходит через ВЕБ-ХУК с этим
+    именем/аватаром вместо обычной отправки от лица бота. У сообщения от
+    бота Discord ВСЕГДА показывает бейдж "БОТ" и настоящее имя/аватар
+    учётной записи бота -- это платформенное ограничение, не настроить
+    никаким параметром обычной отправки; единственный способ обойти его --
+    веб-хук, у которого нет привязки к аккаунту бота вообще."""
     first, *rest = pages
+
+    if persona_name:
+        owner_channel = target.parent if isinstance(target, discord.Thread) else target
+        webhook = await _get_or_create_webhook(owner_channel)
+
+        if isinstance(target, discord.ForumChannel):
+            message = await webhook.send(
+                content=content, embeds=first, username=persona_name, avatar_url=persona_avatar_url,
+                thread_name=(topic or "Без темы")[:100], wait=True,
+            )
+            destination = message.thread or target
+        else:
+            thread_kwarg = {"thread": target} if isinstance(target, discord.Thread) else {}
+            await webhook.send(
+                content=content, embeds=first, username=persona_name, avatar_url=persona_avatar_url,
+                wait=True, **thread_kwarg,
+            )
+            destination = target
+
+        thread_kwarg = {"thread": destination} if isinstance(destination, discord.Thread) else {}
+        for page in rest:
+            await webhook.send(embeds=page, username=persona_name, avatar_url=persona_avatar_url, wait=True, **thread_kwarg)
+        return destination
+
     if isinstance(target, discord.ForumChannel):
         result = await target.create_thread(name=(topic or "Без темы")[:100], content=content, embeds=first)
         for page in rest:
@@ -215,13 +261,15 @@ class AnnounceModal(discord.ui.Modal, title="Новое объявление"):
 
     def __init__(
         self, renderer: MessageRenderer, channel: discord.abc.GuildChannel, *,
-        color: int | None, show_author: bool,
+        color: int | None, show_author: bool, persona_name: str | None = None, persona_avatar_url: str | None = None,
     ) -> None:
         super().__init__()
         self._renderer = renderer
         self._channel = channel
         self._color = color
         self._show_author = show_author
+        self._persona_name = persona_name
+        self._persona_avatar_url = persona_avatar_url
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -247,6 +295,7 @@ class AnnounceModal(discord.ui.Modal, title="Новое объявление"):
         pages = self._renderer.render(spec, bot_user=interaction.client.user)
         destination = await _deliver_pages(
             self._channel, pages, topic=str(self.topic.value) if self.topic.value else None, content=mention_content,
+            persona_name=self._persona_name, persona_avatar_url=self._persona_avatar_url,
         )
         note = f" Пост: {destination.mention}" if isinstance(self._channel, discord.ForumChannel) else ""
         if unresolved:
@@ -367,12 +416,15 @@ class MessageBuilderCog(commands.Cog):
         channel="Куда отправить -- обычный канал ИЛИ форум-канал (по умолчанию -- текущий канал)",
         color="Цвет полосы слева (hex, напр. 2B6CB0) -- если не указать, обычный синий по умолчанию",
         show_author="Показывать имя сервера и его иконку строкой над заголовком, внутри самой карточки (по умолчанию да)",
+        as_name='Отправить от имени персонажа/сервера вместо бота (убирает бейдж "БОТ") -- имя, которое увидят все',
+        as_avatar_url="Аватар для этого имени (URL картинки) -- если не указать, а as_name задан, возьмётся иконка сервера",
     )
     @app_commands.autocomplete(channel=_text_or_forum_channel_autocomplete)
     @require(Role.MODERATOR)
     async def announce(
         self, interaction: discord.Interaction, channel: str | None = None,
         color: str | None = None, show_author: bool = True,
+        as_name: str | None = None, as_avatar_url: str | None = None,
     ) -> None:
         parsed_color, color_error = _parse_color(color)
         if color_error:
@@ -393,13 +445,24 @@ class MessageBuilderCog(commands.Cog):
         if not isinstance(target, (discord.TextChannel, discord.ForumChannel, discord.Thread)):
             await interaction.response.send_message("⚠️ Объявление можно отправить только в текстовый канал, тред или форум-канал.", ephemeral=True)
             return
+
+        # Аватар персонажа по умолчанию -- иконка сервера, если имя
+        # задано, а свою картинку не указали (только имя без аватара
+        # выглядело бы странно -- дефолтная "болванка" Discord).
+        persona_avatar = as_avatar_url
+        if as_name and not persona_avatar and interaction.guild and interaction.guild.icon:
+            persona_avatar = interaction.guild.icon.url
+
         # send_modal -- это и есть подтверждение интеракции, defer() здесь
         # не нужен (и невозможен -- нельзя и то, и другое сразу). Поэтому
-        # цвет/показ автора -- параметры самой команды, а не поля формы:
-        # модальные окна Discord ограничены 5 текстовыми полями, а они уже
-        # заняты заголовком/текстом/картинкой/темой/пингами.
+        # цвет/показ автора/персонаж -- параметры самой команды, а не поля
+        # формы: модальные окна Discord ограничены 5 текстовыми полями, а
+        # они уже заняты заголовком/текстом/картинкой/темой/пингами.
         await interaction.response.send_modal(
-            AnnounceModal(self.renderer, target, color=parsed_color, show_author=show_author)
+            AnnounceModal(
+                self.renderer, target, color=parsed_color, show_author=show_author,
+                persona_name=as_name, persona_avatar_url=persona_avatar,
+            )
         )
 
     @app_commands.command(name="message_template", description="Отправить сообщение из готового шаблона (или создать пост в форуме)")
