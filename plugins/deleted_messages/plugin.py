@@ -12,6 +12,20 @@ from core.events import MessageDeleted
 from database.repositories.message_repository import MessageRepository
 from utils.text import truncate
 
+# Расширения, для которых показываем настоящую картинку в логе (embed.set_image),
+# а не просто ссылку текстом -- Discord поддерживает только ОДНО превью на
+# embed, поэтому берём первое подходящее вложение; остальные (и файлы других
+# типов) по-прежнему перечисляются ссылками в поле "Вложения" ниже.
+_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+
+
+def _first_image_url(attachments: list[str]) -> str | None:
+    for url in attachments:
+        path = url.split("?", 1)[0].lower()
+        if path.endswith(_IMAGE_EXTENSIONS):
+            return url
+    return None
+
 
 class DeletedMessagesCog(commands.Cog):
     def __init__(self, ctx) -> None:
@@ -98,6 +112,9 @@ class DeletedMessagesCog(commands.Cog):
         embed.add_field(name="ID сообщения", value=f"`{message_id}`", inline=True)
         if attachments:
             embed.add_field(name="Вложения", value="\n".join(attachments)[:1024], inline=False)
+            image_url = _first_image_url(attachments)
+            if image_url:
+                embed.set_image(url=image_url)
 
         try:
             await channel.send(embed=embed)

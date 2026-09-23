@@ -1,6 +1,8 @@
 """Плагин модерации: команды + пассивный захват через audit-log + красивые логи (ТЗ §11)."""
 from __future__ import annotations
 
+import datetime as dt
+
 import discord
 
 from core.base_plugin import BasePlugin, PluginMeta
@@ -29,6 +31,43 @@ CHANGE_LABELS = {
     "delete": "удалён",
     "update": "изменён",
 }
+
+# Человекочитаемые подписи для полей "Дополнительно" -- сырые ключи из
+# ModerationAction.extra (см. plugins/moderation/listeners.py и
+# services/moderation_service.py) собраны из нескольких разных мест и
+# были бы неинформативны показанные как есть ("until: ...", "role: ...").
+_EXTRA_LABELS = {
+    "until": "Тайм-аут до",
+    "minutes": "На сколько",
+    "role": "Роль",
+    "before": "Было",
+    "after": "Стало",
+    "count": "Сообщений",
+}
+
+
+def _format_extra_value(key: str, value: object) -> str:
+    """``until`` приходит сырой Python-строкой datetime (микросекунды,
+    ``+00:00`` -- см. listeners.py, откуда и растут ноги у некрасивого
+    "until: 2026-09-23 18:59:40.668000+00:00"). Переводим в родную
+    временную метку Discord (``<t:...:f>``) -- ту же разметку, что уже
+    стоит в поле "Когда" выше: Discord сам показывает её каждому
+    зрителю в ЕГО локальном часовом поясе -- у модераторов сервера это
+    и есть МСК, без ручного пересчёта смещения (который для кого-то
+    другого часового пояса как раз оказался бы неверным)."""
+    if key == "until":
+        try:
+            return discord_full(dt.datetime.fromisoformat(str(value)))
+        except ValueError:
+            return str(value)
+    if key == "minutes":
+        return f"{value} мин."
+    return str(value)
+
+
+def _format_extra(extra: dict) -> str:
+    lines = [f"**{_EXTRA_LABELS.get(key, key)}:** {_format_extra_value(key, value)}" for key, value in extra.items()]
+    return "\n".join(lines)
 
 
 class ModerationPlugin(BasePlugin):
@@ -73,7 +112,7 @@ class ModerationPlugin(BasePlugin):
         embed.add_field(name="Когда", value=discord_full(discord.utils.utcnow()), inline=True)
         embed.add_field(name="Причина", value=event.reason or "—", inline=False)
         if event.extra:
-            embed.add_field(name="Дополнительно", value=", ".join(f"{k}: {v}" for k, v in event.extra.items())[:1024], inline=False)
+            embed.add_field(name="Дополнительно", value=_format_extra(event.extra)[:1024], inline=False)
         try:
             await channel.send(embed=embed)
         except discord.HTTPException as exc:
