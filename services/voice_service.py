@@ -29,6 +29,7 @@ class VoiceService:
         category: discord.CategoryChannel | None,
         name_template: str = "{name}",
         user_limit: int = 0,
+        moderator_role_id: int | None = None,
     ) -> discord.VoiceChannel:
         guild = member.guild
         name = name_template.format(name=member.display_name)[:100]
@@ -51,6 +52,16 @@ class VoiceService:
                 connect=True, view_channel=True, manage_channels=True, move_members=True,
             ),
         }
+        # Роль модератора (если настроена, /setup roles) заходит в ЛЮБУЮ
+        # комнату свободно, даже закрытую владельцем (/voice lock) -- это
+        # СВОЙ overwrite роли на канале, а не общий для @everyone, поэтому
+        # он всегда перекрывает более общий запрет для @everyone (у
+        # Discord overwrite конкретной роли участника важнее overwrite'а
+        # @everyone) -- close_room() его никогда не трогает.
+        if moderator_role_id is not None:
+            moderator_role = guild.get_role(moderator_role_id)
+            if moderator_role is not None:
+                overwrites[moderator_role] = discord.PermissionOverwrite(connect=True, view_channel=True)
         channel = await guild.create_voice_channel(
             name=name, category=category, overwrites=overwrites, user_limit=max(0, min(user_limit, 99)),
         )
@@ -102,7 +113,10 @@ class VoiceService:
         """Закрывает комнату для новых участников, но НЕ выгоняет и не
         мешает вернуться тем, кто уже внутри -- каждому из них выдаётся
         персональное разрешение на вход поверх общего запрета для
-        @everyone. Видимость комнаты (`is_hidden`) не трогается."""
+        @everyone. Роль модератора (если задана при создании комнаты --
+        см. :meth:`create_room`) продолжает заходить свободно: её
+        собственное разрешение на канале стоит выше запрета для
+        @everyone, этот метод его не трогает вообще."""
         default_role = channel.guild.default_role
         overwrite = channel.overwrites_for(default_role)
         overwrite.connect = False
@@ -128,25 +142,6 @@ class VoiceService:
         async with self.db.session() as session:
             await VoiceRepository(session).set_locked(channel.id, False)
 
-    async def hide_room(self, channel: discord.VoiceChannel) -> None:
-        """Прячет комнату из списка каналов. Независимо от того, закрыта
-        ли она для входа -- это отдельный переключатель."""
-        default_role = channel.guild.default_role
-        overwrite = channel.overwrites_for(default_role)
-        overwrite.view_channel = False
-        await channel.set_permissions(default_role, overwrite=overwrite)
-
-        async with self.db.session() as session:
-            await VoiceRepository(session).set_hidden(channel.id, True)
-
-    async def show_room(self, channel: discord.VoiceChannel) -> None:
-        default_role = channel.guild.default_role
-        overwrite = channel.overwrites_for(default_role)
-        overwrite.view_channel = True
-        await channel.set_permissions(default_role, overwrite=overwrite)
-
-        async with self.db.session() as session:
-            await VoiceRepository(session).set_hidden(channel.id, False)
 
     async def rename(self, channel: discord.VoiceChannel, name: str) -> None:
         await channel.edit(name=name[:100])

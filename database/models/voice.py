@@ -21,11 +21,10 @@ class TemporaryVoiceChannel(TimestampMixin, BigIntPK, Base):
     guild_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("guilds.id", ondelete="CASCADE"))
     channel_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     owner_id: Mapped[int] = mapped_column(BigInteger)
-    # Два независимых переключателя вместо одного enum-поля "mode" --
-    # "закрыто для входа" и "скрыто из списка каналов" осмысленно
-    # комбинируются независимо друг от друга (напр. видна, но закрыта).
+    # Раньше здесь был ещё is_hidden ("скрыто из списка каналов") --
+    # убрано целиком по просьбе клиента, комнату теперь нельзя скрыть,
+    # только закрыть для входа.
     is_locked: Mapped[bool] = mapped_column(Boolean, default=False)
-    is_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     name: Mapped[str] = mapped_column(String(100), default="")
     member_limit: Mapped[int] = mapped_column(default=0)
 

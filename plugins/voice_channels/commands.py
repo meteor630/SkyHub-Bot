@@ -51,7 +51,6 @@ class VoiceCog(commands.Cog):
 
         record = await self.service.get_room(channel.id)
         locked_label = "🔒 Закрыта для входа" if record and record.is_locked else "🔓 Открыта для входа"
-        hidden_label = "🙈 Скрыта из списка" if record and record.is_hidden else "👁 Видна в списке"
         limit_label = str(record.member_limit) if record and record.member_limit else "без лимита"
 
         allowed, denied = [], []
@@ -65,7 +64,6 @@ class VoiceCog(commands.Cog):
 
         embed = discord.Embed(title=f"ℹ️ {channel.name}", color=discord.Color.blue())
         embed.add_field(name="Вход", value=locked_label, inline=True)
-        embed.add_field(name="Видимость", value=hidden_label, inline=True)
         embed.add_field(name="Лимит участников", value=limit_label, inline=True)
         embed.add_field(name="Сейчас в комнате", value=str(len(channel.members)), inline=True)
         embed.add_field(
@@ -108,22 +106,6 @@ class VoiceCog(commands.Cog):
             return
         await self.service.open_room(channel)
         await interaction.followup.send("🔓 Комната открыта для входа всем.", ephemeral=True)
-
-    @voice_group.command(name="hide", description="Скрыть комнату из списка каналов")
-    async def hide(self, interaction: discord.Interaction) -> None:
-        channel = await self._owned_channel_or_error(interaction)
-        if channel is None:
-            return
-        await self.service.hide_room(channel)
-        await interaction.followup.send("🙈 Комната скрыта из списка каналов.", ephemeral=True)
-
-    @voice_group.command(name="show", description="Сделать комнату видимой в списке каналов")
-    async def show(self, interaction: discord.Interaction) -> None:
-        channel = await self._owned_channel_or_error(interaction)
-        if channel is None:
-            return
-        await self.service.show_room(channel)
-        await interaction.followup.send("👁 Комната видна в списке каналов.", ephemeral=True)
 
     @voice_group.command(name="kick", description="Выгнать пользователя из комнаты")
     async def kick(self, interaction: discord.Interaction, member: discord.Member) -> None:

@@ -63,12 +63,6 @@ class VoiceRepository(BaseRepository[TemporaryVoiceChannel]):
             record.is_locked = locked
             await self.session.flush()
 
-    async def set_hidden(self, channel_id: int, hidden: bool) -> None:
-        record = await self.get_by_channel_id(channel_id)
-        if record is not None:
-            record.is_hidden = hidden
-            await self.session.flush()
-
     async def rename(self, channel_id: int, name: str) -> None:
         record = await self.get_by_channel_id(channel_id)
         if record is not None:

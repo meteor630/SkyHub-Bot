@@ -88,16 +88,6 @@ async def _do_open(interaction: discord.Interaction, service: VoiceService, chan
     await interaction.response.send_message(f"🔓 Комната открыта для входа всем.{note}", ephemeral=True)
 
 
-async def _do_hide(interaction: discord.Interaction, service: VoiceService, channel: discord.VoiceChannel, note: str) -> None:
-    await service.hide_room(channel)
-    await interaction.response.send_message(f"🙈 Комната скрыта из списка каналов.{note}", ephemeral=True)
-
-
-async def _do_show(interaction: discord.Interaction, service: VoiceService, channel: discord.VoiceChannel, note: str) -> None:
-    await service.show_room(channel)
-    await interaction.response.send_message(f"👁 Комната видна в списке каналов.{note}", ephemeral=True)
-
-
 async def _do_users(interaction: discord.Interaction, channel: discord.VoiceChannel, note: str) -> None:
     names = "\n".join(f"• {m.display_name}" for m in channel.members) or "—"
     await interaction.response.send_message(f"👥 **Участники комнаты:**\n{names}{note}", ephemeral=True)
@@ -147,18 +137,6 @@ class VoiceControlView(discord.ui.View):
         channel = await self._channel_and_owner_check(interaction)
         if channel is not None:
             await _do_open(interaction, self.service, channel, "")
-
-    @discord.ui.button(label="Скрыть", emoji="🙈", style=discord.ButtonStyle.secondary, custom_id="voice:hide")
-    async def hide(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        channel = await self._channel_and_owner_check(interaction)
-        if channel is not None:
-            await _do_hide(interaction, self.service, channel, "")
-
-    @discord.ui.button(label="Показать", emoji="👁", style=discord.ButtonStyle.secondary, custom_id="voice:show")
-    async def show(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        channel = await self._channel_and_owner_check(interaction)
-        if channel is not None:
-            await _do_show(interaction, self.service, channel, "")
 
     @discord.ui.button(label="Пользователи", emoji="👥", style=discord.ButtonStyle.secondary, custom_id="voice:users")
     async def users(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -229,18 +207,6 @@ class CentralVoicePanelView(discord.ui.View):
         channel, note = await self._resolve(interaction)
         if channel is not None:
             await _do_open(interaction, self.service, channel, note)
-
-    @discord.ui.button(label="Скрыть", emoji="🙈", style=discord.ButtonStyle.secondary, custom_id="voice_panel:hide")
-    async def hide(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        channel, note = await self._resolve(interaction)
-        if channel is not None:
-            await _do_hide(interaction, self.service, channel, note)
-
-    @discord.ui.button(label="Показать", emoji="👁", style=discord.ButtonStyle.secondary, custom_id="voice_panel:show")
-    async def show(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        channel, note = await self._resolve(interaction)
-        if channel is not None:
-            await _do_show(interaction, self.service, channel, note)
 
     @discord.ui.button(label="Пользователи", emoji="👥", style=discord.ButtonStyle.secondary, custom_id="voice_panel:users")
     async def users(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

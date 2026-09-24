@@ -35,7 +35,6 @@ async def test_create_room_persists_and_records_owner(session) -> None:
     room = await repo.create(guild_id=GUILD_ID, channel_id=CHANNEL_ID, owner_id=OWNER_ID, name="Test Room")
 
     assert room.is_locked is False
-    assert room.is_hidden is False
     fetched = await repo.get_by_channel_id(CHANNEL_ID)
     assert fetched is not None
     assert fetched.owner_id == OWNER_ID
@@ -55,26 +54,17 @@ async def test_create_room_with_member_limit_preset(session) -> None:
     assert fetched.member_limit == 2
 
 
-async def test_set_locked_and_hidden_independently(session) -> None:
-    """is_locked (закрыто для входа) и is_hidden (скрыто из списка) --
-    два независимых переключателя, а не один enum "mode"."""
+async def test_set_locked(session) -> None:
     repo = VoiceRepository(session)
     await repo.create(guild_id=GUILD_ID, channel_id=CHANNEL_ID, owner_id=OWNER_ID, name="Test Room")
 
     await repo.set_locked(CHANNEL_ID, True)
     fetched = await repo.get_by_channel_id(CHANNEL_ID)
     assert fetched.is_locked is True
-    assert fetched.is_hidden is False
-
-    await repo.set_hidden(CHANNEL_ID, True)
-    fetched = await repo.get_by_channel_id(CHANNEL_ID)
-    assert fetched.is_locked is True  # закрытие для входа не трогает видимость
-    assert fetched.is_hidden is True
 
     await repo.set_locked(CHANNEL_ID, False)
     fetched = await repo.get_by_channel_id(CHANNEL_ID)
     assert fetched.is_locked is False
-    assert fetched.is_hidden is True  # и наоборот
 
 
 async def test_rename(session) -> None:

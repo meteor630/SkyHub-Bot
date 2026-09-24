@@ -77,7 +77,6 @@ class VoiceEventsCog(commands.Cog):
             name="Кнопками ниже или командой /voice",
             value=(
                 "🔒/🔓 закрыть/открыть для входа -- `/voice lock` / `/voice unlock`\n"
-                "🙈/👁 скрыть/показать из списка каналов -- `/voice hide` / `/voice show`\n"
                 "✏️ переименовать -- `/voice name <название>`\n"
                 "👥 список участников -- кнопка «Пользователи»\n"
                 "👤 передать владение -- `/voice transfer <участник>`\n"
@@ -117,8 +116,11 @@ class VoiceEventsCog(commands.Cog):
         category = member.guild.get_channel(category_id) if category_id else None
         if category is not None and not isinstance(category, discord.CategoryChannel):
             category = None
+        moderator_role_id = await self.ctx.guild_config().resolve_role_id(member.guild.id, "moderator")
 
-        channel = await self.service.create_room(member=member, category=category, user_limit=user_limit)
+        channel = await self.service.create_room(
+            member=member, category=category, user_limit=user_limit, moderator_role_id=moderator_role_id,
+        )
         await member.move_to(channel, reason="Создана временная голосовая комната")
         self.ctx.emit(VoiceCreated(guild_id=member.guild.id, channel_id=channel.id, owner_id=member.id))
 
